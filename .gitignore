@@ -1,0 +1,40 @@
+# Build outputs
+build*/
+cmake-build-*/
+out/
+
+# IDE / editor
+.cache/
+.idea/
+.vscode/
+*.user
+*.swp
+
+# CMake
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Test and benchmark artifacts
+test-results/
+bench-results/
+*.log
+.coverage
+
+# Private fixture media: never enter version control (PLAN.md / TECH_SPEC.md)
+testvideo1.mp4
+fixtures/
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+
+# Generated previews, databases, disposable profiles
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db

@@ -46,6 +46,7 @@ public:
         RevisionRole,
         PosterSourceRole,
         AtlasSourceRole,
+        ProbeErrorRole,
     };
     Q_ENUM(Roles)
 

@@ -1076,7 +1076,7 @@ VideoRow Catalogue::readRow(qint64 videoId)
     Statement st = m_db->prepare(
         "SELECT id, root_id, rel_path, file_name, size_bytes, mtime_ms, revision, "
         "duration_ms, display_width, display_height, codec, rating, views, added_ms, "
-        "availability, probe_status, "
+        "availability, probe_status, probe_error, "
         "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='poster'), "
         "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='storyboard') "
         "FROM videos v WHERE v.id=?");
@@ -1099,8 +1099,9 @@ VideoRow Catalogue::readRow(qint64 videoId)
     row.addedMs = st.int64(13);
     row.availability = st.text(14);
     row.probeStatus = st.text(15);
-    row.posterReady = st.int64(16) != 0;
-    row.atlasReady = st.int64(17) != 0;
+    row.probeError = st.text(16);
+    row.posterReady = st.int64(17) != 0;
+    row.atlasReady = st.int64(18) != 0;
     return row;
 }
 

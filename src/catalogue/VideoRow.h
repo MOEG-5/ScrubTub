@@ -25,6 +25,7 @@ struct VideoRow {
     qint64 addedMs = 0;
     QString availability;       // unprobed|available|missing|unavailable
     QString probeStatus;        // pending|ok|error|timeout
+    QString probeError;         // bounded reason when a probe failed
     bool posterReady = false;   // poster artifact exists in the cache
     bool atlasReady = false;    // storyboard atlas exists in the cache
 };

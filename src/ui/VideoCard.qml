@@ -274,7 +274,8 @@ Item {
                 window.showDetails(videoId, name, path, sizeBytes, durationText,
                                    durationMs, revision,
                                    displayWidth > 0 ? displayWidth + "×" + displayHeight : "?",
-                                   codec || "?", views, availability, probeStatus)
+                                   codec || "?", views, availability, probeStatus,
+                                   probeError)
             }
         }
         onDoubleClicked: catalogue.openInDefaultPlayer(videoId)

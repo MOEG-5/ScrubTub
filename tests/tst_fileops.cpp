@@ -44,6 +44,7 @@ private slots:
     void restoreRejectsNewerSchema();
     void restoreRejectsCorruptBackup();
     void clearPreviewsKeepsAnnotations();
+    void sizeFormattingUsesIecUnits();
 
 private:
     bool makeCatalogue(const QString& name);
@@ -398,6 +399,19 @@ void TestFileOps::clearPreviewsKeepsAnnotations()
     }
     QVERIFY2(ratingKept, "clear previews must not touch ratings");
     QVERIFY(usage.size() >= 1);
+}
+
+// §1: IEC units with the correct factor (user-reported GiB/MiB mislabel).
+void TestFileOps::sizeFormattingUsesIecUnits()
+{
+    // The user-reported case: 1427.8 MiB is above 1 GiB → shown as GiB with
+    // the GiB factor (was mislabeled "1427.60 GiB" using the MiB factor).
+    QCOMPARE(formatIecBytes(1427 * 1024 * 1024 + 823 * 1024),
+             QStringLiteral("1.39 GiB"));
+    QCOMPARE(formatIecBytes(qint64(2) * 1024 * 1024 * 1024),
+             QStringLiteral("2.00 GiB"));
+    QCOMPARE(formatIecBytes(512 * 1024 * 1024), QStringLiteral("512.0 MiB"));
+    QCOMPARE(formatIecBytes(-1), QStringLiteral("?"));
 }
 
 QTEST_GUILESS_MAIN(TestFileOps)

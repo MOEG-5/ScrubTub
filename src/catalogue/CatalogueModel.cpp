@@ -10,9 +10,11 @@ QString formatIecBytes(qint64 bytes)
 {
     if (bytes < 0)
         return QStringLiteral("?");
-    const double mib = 1024.0 * 1024.0;
-    if (bytes >= 1024.0 * mib)
-        return QStringLiteral("%1 GiB").arg(bytes / mib, 0, 'f', 2);
+    const double kib = 1024.0;
+    const double mib = kib * 1024.0;
+    const double gib = mib * 1024.0;
+    if (bytes >= gib)
+        return QStringLiteral("%1 GiB").arg(bytes / gib, 0, 'f', 2);
     return QStringLiteral("%1 MiB").arg(bytes / mib, 0, 'f', 1);
 }
 
@@ -91,6 +93,8 @@ QVariant CatalogueModel::data(const QModelIndex& index, int role) const
         return row.atlasReady
             ? QStringLiteral("image://previews/atlas/%1-%2").arg(row.id).arg(row.revision)
             : QString();
+    case ProbeErrorRole:
+        return row.probeError;
     default:
         return {};
     }
@@ -108,7 +112,8 @@ QHash<int, QByteArray> CatalogueModel::roleNames() const
             {DisplayWidthRole, "displayWidth"}, {DisplayHeightRole, "displayHeight"},
             {RevisionRole, "revision"},
             {PosterSourceRole, "posterSource"},
-            {AtlasSourceRole, "atlasSource"}};
+            {AtlasSourceRole, "atlasSource"},
+            {ProbeErrorRole, "probeError"}};
 }
 
 void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)

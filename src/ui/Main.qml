@@ -232,6 +232,18 @@ ApplicationWindow {
                             color: rootStatus === "ok" ? "#e9e9f0" : "#ffb36b"
                         }
                         Button {
+                            id: rescanButton
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 34
+                            flat: true
+                            text: "⟳"
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 400
+                            ToolTip.text: qsTr("Force rescan: re-check every file and retry failed probes")
+                            onClicked: catalogue.rescanRoot(rootId, true)
+                        }
+                        Button {
                             id: removeButton
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.right: parent.right
@@ -325,6 +337,7 @@ ApplicationWindow {
                     DetailRow { label: qsTr("Codec"); value: detailsCodec }
                     DetailRow { label: qsTr("Views"); value: detailsViews }
                     DetailRow { label: qsTr("Status"); value: detailsAvailability + " / " + detailsProbeStatus }
+                    DetailRow { label: qsTr("Probe detail"); value: detailsProbeError }
 
                     Label { text: qsTr("Tags"); color: "#8b8b96" }
                     Flow {
@@ -497,8 +510,9 @@ ApplicationWindow {
         if (bytes < 0)
             return "?"
         const mib = 1048576
-        if (bytes >= 1024 * mib)
-            return (bytes / mib).toFixed(2) + " GiB"
+        const gib = 1024 * mib
+        if (bytes >= gib)
+            return (bytes / gib).toFixed(2) + " GiB"
         return (bytes / mib).toFixed(1) + " MiB"
     }
 
@@ -697,10 +711,12 @@ ApplicationWindow {
     property string detailsViews: ""
     property string detailsAvailability: ""
     property string detailsProbeStatus: ""
+    property string detailsProbeError: ""
     property int detailsVideoId: -1
 
     function showDetails(videoId, name, path, sizeText, durationText, durationMs,
-                         revision, resolution, codec, views, availability, probeStatus) {
+                         revision, resolution, codec, views, availability, probeStatus,
+                         probeError) {
         detailsVideoId = videoId
         detailsName = name
         detailsPath = path
@@ -713,6 +729,7 @@ ApplicationWindow {
         detailsViews = views
         detailsAvailability = availability
         detailsProbeStatus = probeStatus
+        detailsProbeError = probeError
         detailsTags = []
         catalogue.requestTags(videoId)
     }

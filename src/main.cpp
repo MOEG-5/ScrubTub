@@ -121,6 +121,15 @@ int main(int argc, char* argv[])
 
     itub::HoverSession hoverSession(&app);
 
+    // Detail paging: the model requests pages of 200 rows by ID (§8) through
+    // the proxy; results return as queued rowsChanged deliveries.
+    catalogueModel->setFetchCallback([&proxy](const QList<qint64>& ids) {
+        QVariantList variantIds;
+        for (const qint64 id : ids)
+            variantIds.append(id);
+        proxy.fetchRowsPage(variantIds);
+    });
+
     QQmlApplicationEngine engine;
     qmlRegisterType<itub::HoverFrameItem>("itub.media", 1, 0, "HoverFrameItem");
     // Poster/atlas paths are derived deterministically from the profile cache

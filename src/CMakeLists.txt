@@ -7,6 +7,7 @@ add_library(itub_core STATIC
     catalogue/CatalogueModel.h catalogue/CatalogueModel.cpp
     catalogue/CatalogueProxy.h catalogue/CatalogueProxy.cpp
     catalogue/VideoRow.h
+    catalogue/TagEngine.h catalogue/TagEngine.cpp
     media/Probe.h media/Probe.cpp
     media/Extract.h media/Extract.cpp
     media/HoverSession.h media/HoverSession.cpp

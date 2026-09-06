@@ -61,6 +61,16 @@ public:
     quint64 probed() const { return m_probed; }
     quint64 errors() const { return m_errors; }
 
+    using FetchCallback = std::function<void(const QList<qint64>&)>;
+
+    // Sets the display order (search result or browse order). Details for
+    // IDs not yet loaded are requested through the fetch callback in pages
+    // of 200 (§8); delegates for missing rows show placeholders.
+    void setOrder(const QList<qint64>& ids, bool isSearchResult);
+    void setFetchCallback(FetchCallback callback);
+    void setPageSize(int n) { m_pageSize = n; }
+    qint64 generation() const { return m_generation; }
+
 public slots:
     void applyRows(const QList<itub::VideoRow>& rows, bool reset);
     void applyProgress(const itub::ScanProgress& progress);
@@ -70,8 +80,14 @@ signals:
     void progressChanged();
 
 private:
+    void requestMissingDetails();
+
     QHash<qint64, VideoRow> m_rows;
     QVector<qint64> m_order;
+    FetchCallback m_fetch;
+    bool m_fetching = false;
+    int m_pageSize = 200;
+    quint64 m_generation = 0;
     QString m_scanState = QStringLiteral("idle");
     quint64 m_discovered = 0;
     quint64 m_probed = 0;

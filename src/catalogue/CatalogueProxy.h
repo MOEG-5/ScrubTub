@@ -34,6 +34,18 @@ public:
     Q_INVOKABLE void requestStoryboard(qint64 videoId);
     Q_INVOKABLE void hoverEngage(qint64 videoId);
     Q_INVOKABLE void requestSampleTimes(qint64 videoId);
+
+    // Live search and tags (milestone 3). The spec map mirrors QuerySpec
+    // fields; unknown keys are ignored.
+    Q_INVOKABLE void search(const QVariantMap& spec);
+    Q_INVOKABLE void clearSearch();
+    Q_INVOKABLE void fetchRowsPage(const QVariantList& videoIds);
+    Q_INVOKABLE void addManualTag(qint64 videoId, const QString& text);
+    Q_INVOKABLE void removeTag(qint64 videoId, qint64 tagId);
+    Q_INVOKABLE void suppressAutoTag(qint64 videoId, qint64 tagId);
+    Q_INVOKABLE void resetSuppressions();
+    Q_INVOKABLE void regenerateAutoTags(qint64 videoId);
+    Q_INVOKABLE void requestTags(qint64 videoId);
     Q_INVOKABLE void loadExistingState();
 
 signals:
@@ -45,6 +57,10 @@ signals:
                           qint64 durationMs);
     void sampleTimesReady(qint64 videoId, const QVariantList& timesMs);
     void cacheEntryChanged(qint64 videoId, const QString& profile);
+    void searchCompleted(quint64 generation, const QList<qint64>& orderedIds,
+                         const QString& validationError);
+    void tagsReady(qint64 videoId, const QVariantList& tags);
+    void tagListChanged();
 
 private:
     Catalogue* m_catalogue;

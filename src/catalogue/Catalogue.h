@@ -12,8 +12,10 @@
 
 #include "VideoRow.h"
 
+#include <QHash>
 #include <QObject>
 #include <QStringList>
+#include <QVariantList>
 
 #include <atomic>
 #include <memory>
@@ -28,6 +30,48 @@ namespace itub {
 class Database;
 struct ProbeResult;
 struct ExtractResult;
+
+// Search snapshot record (§8): compact pre-normalized text per row.
+struct SearchRecord {
+    qint64 id = 0;
+    QString fileName;
+    QString relPath;
+    QStringList tokens;       // normalized name/path/tag tokens
+    QStringList foldedTokens; // diacritic-folded copies
+};
+
+// Structured query (§1, §8): all categories AND-combined; bounds inclusive;
+// unknown (NULL) values never match numeric ranges unless the explicit
+// unknown option is set on the filter.
+struct QuerySpec {
+    QString text;
+
+    qlonglong sizeMin = -1;
+    qlonglong sizeMax = -1;
+    int widthMin = 0;
+    int widthMax = 0;
+    int heightMin = 0;
+    int heightMax = 0;
+    QString resolutionPreset;        // shorter-side bucket: 480..2160
+    qlonglong durationMinMs = -1;
+    qlonglong durationMaxMs = -1;
+
+    int ratingMode = 0;              // 0 any, 1 unrated, 2 exact value
+    int ratingValue = 0;
+
+    QStringList includeAllTags;      // normalized; every one required
+    QStringList includeAnyTags;      // normalized; at least one
+    QStringList excludeTags;         // normalized; never present
+
+    qlonglong rootId = -1;           // -1 = any root
+    QString folderPrefix;            // relative path prefix
+    qlonglong viewsMin = -1;         // -1 = no filter; 0 includes zero views
+    QStringList availability;        // empty = all
+
+    QString sortKey = QStringLiteral("added");
+    bool sortDescending = false;
+    bool userSort = false;           // explicit user sort overrides relevance
+};
 
 class Catalogue : public QObject {
     Q_OBJECT
@@ -82,6 +126,22 @@ public slots:
     void hoverEngage(qint64 videoId);
     void requestSampleTimes(qint64 videoId);
 
+    // Live search (§8): structured filters first, then every query token must
+    // match; stale results are discarded by generation. Details are fetched
+    // by ID pages on demand.
+    void search(const itub::QuerySpec& spec);
+    void fetchRowsPage(const QList<qint64>& videoIds);
+    void clearSearch();
+    void setPageSize(int n) { m_pageSize = n; }
+
+    // Tags (§7): catalogue-only edits; the source filename is never touched.
+    void addManualTag(qint64 videoId, const QString& text);
+    void removeTag(qint64 videoId, qint64 tagId);
+    void suppressAutoTag(qint64 videoId, qint64 tagId);
+    void resetSuppressions();
+    void regenerateAutoTags(qint64 videoId);
+    void requestTags(qint64 videoId);
+
 signals:
     void rootAdded(const itub::RootInfo& root);
     void rootRemoved(qint64 rootId);
@@ -93,6 +153,10 @@ signals:
     void hoverSourceReady(qint64 videoId, qint64 revision, const QString& absolutePath,
                           qint64 durationMs);
     void sampleTimesReady(qint64 videoId, const QVariantList& timesMs);
+    void searchCompleted(quint64 generation, const QList<qint64>& orderedIds,
+                         const QString& validationError);
+    void tagsReady(qint64 videoId, const QVariantList& tags);
+    void tagListChanged();
     void operationFailed(const QString& message);
 
 private:
@@ -127,6 +191,14 @@ private:
     QString artifactPath(qint64 videoId, qint64 revision, const QString& profile) const;
     qint64 settingInt(const char* key, qint64 fallback) const;
     void setSettingInt(const char* key, qint64 value);
+    void refreshSearchRecord(qint64 videoId);
+    void applyAutoTags(qint64 videoId, const ProbeResult& probe);
+
+    QString whereForFilters(const QuerySpec& spec, QStringList* wheres) const;
+
+    QHash<qint64, SearchRecord> m_searchRecords;
+    quint64 m_searchGeneration = 0;
+    int m_pageSize = 200;         // §8 card-detail page size
 
     std::unique_ptr<Database> m_db;
     QString m_profileDataDir;

@@ -131,6 +131,7 @@ void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
         return;
     }
 
+    bool inserted = false;
     for (const VideoRow& row : rows) {
         const auto it = m_rows.constFind(row.id);
         if (it != m_rows.constEnd()) {
@@ -155,8 +156,50 @@ void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
             m_order.insert(insertAt, row.id);
             endInsertRows();
             emit countChanged();
+            inserted = true;
         }
     }
+    if (inserted)
+        requestMissingDetails(); // chain the next page (§8)
+}
+
+void CatalogueModel::setOrder(const QList<qint64>& ids, bool isSearchResult)
+{
+    Q_UNUSED(isSearchResult);
+    ++m_generation;
+    beginResetModel();
+    m_order = ids; // IDs without details yet fetch their pages on demand
+    endResetModel();
+    emit countChanged();
+    requestMissingDetails();
+}
+
+void CatalogueModel::setFetchCallback(FetchCallback callback)
+{
+    m_fetch = std::move(callback);
+}
+
+// Requests detail pages for IDs missing from the loaded set (§8). Pages
+// chain until the view is complete; a synchronous fetch triggers re-entry,
+// so the guard is held for the whole chain.
+void CatalogueModel::requestMissingDetails()
+{
+    if (!m_fetch || m_fetching)
+        return;
+    m_fetching = true;
+    for (;;) {
+        QList<qint64> missing;
+        for (const qint64 id : m_order) {
+            if (!m_rows.contains(id) && !missing.contains(id))
+                missing.append(id);
+            if (missing.size() >= m_pageSize)
+                break;
+        }
+        if (missing.isEmpty())
+            break;
+        m_fetch(missing); // may synchronously insert rows via applyRows
+    }
+    m_fetching = false;
 }
 
 void CatalogueModel::applyProgress(const ScanProgress& progress)

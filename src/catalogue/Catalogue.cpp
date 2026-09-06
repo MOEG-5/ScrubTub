@@ -2,8 +2,10 @@
 // Copyright (C) 2026 the itub authors.
 #include "Catalogue.h"
 
+#include "CatalogueM3.cpp"
 #include "Database.h"
 #include "SourceScanner.h"
+#include "TagEngine.h"
 #include "media/Extract.h"
 #include "media/Probe.h"
 
@@ -704,6 +706,8 @@ bool Catalogue::applyProbeResult(qint64 videoId, qint64 revision, const ProbeRes
             upd.bind(10, revision);
             return upd.run();
         });
+        refreshSearchRecord(videoId);
+        applyAutoTags(videoId, result);
         emitRows(QList<VideoRow>{readRow(videoId)});
         enqueuePreviewJobs(videoId, false);
         return true;

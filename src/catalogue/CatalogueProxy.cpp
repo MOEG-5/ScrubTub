@@ -21,6 +21,94 @@ CatalogueProxy::CatalogueProxy(Catalogue* catalogue, CatalogueModel* model,
     connect(catalogue, &Catalogue::hoverSourceReady, this, &CatalogueProxy::hoverSourceReady);
     connect(catalogue, &Catalogue::sampleTimesReady, this, &CatalogueProxy::sampleTimesReady);
     connect(catalogue, &Catalogue::cacheEntryChanged, this, &CatalogueProxy::cacheEntryChanged);
+    connect(catalogue, &Catalogue::searchCompleted, this, &CatalogueProxy::searchCompleted);
+    connect(catalogue, &Catalogue::tagsReady, this, &CatalogueProxy::tagsReady);
+    connect(catalogue, &Catalogue::tagListChanged, this, &CatalogueProxy::tagListChanged);
+}
+
+void CatalogueProxy::search(const QVariantMap& spec)
+{
+    itub::QuerySpec query;
+    query.text = spec.value(QStringLiteral("text")).toString();
+    query.sizeMin = spec.value(QStringLiteral("sizeMin"), -1).toLongLong();
+    query.sizeMax = spec.value(QStringLiteral("sizeMax"), -1).toLongLong();
+    query.widthMin = spec.value(QStringLiteral("widthMin"), 0).toInt();
+    query.widthMax = spec.value(QStringLiteral("widthMax"), 0).toInt();
+    query.heightMin = spec.value(QStringLiteral("heightMin"), 0).toInt();
+    query.heightMax = spec.value(QStringLiteral("heightMax"), 0).toInt();
+    query.resolutionPreset = spec.value(QStringLiteral("resolutionPreset")).toString();
+    query.durationMinMs = spec.value(QStringLiteral("durationMinMs"), -1).toLongLong();
+    query.durationMaxMs = spec.value(QStringLiteral("durationMaxMs"), -1).toLongLong();
+    query.ratingMode = spec.value(QStringLiteral("ratingMode"), 0).toInt();
+    query.ratingValue = spec.value(QStringLiteral("ratingValue"), 0).toInt();
+    query.includeAllTags = spec.value(QStringLiteral("includeAllTags")).toStringList();
+    query.includeAnyTags = spec.value(QStringLiteral("includeAnyTags")).toStringList();
+    query.excludeTags = spec.value(QStringLiteral("excludeTags")).toStringList();
+    query.rootId = spec.value(QStringLiteral("rootId"), -1).toLongLong();
+    query.folderPrefix = spec.value(QStringLiteral("folderPrefix")).toString();
+    query.viewsMin = spec.value(QStringLiteral("viewsMin"), -1).toLongLong();
+    query.availability = spec.value(QStringLiteral("availability")).toStringList();
+    query.sortKey = spec.value(QStringLiteral("sortKey"), QStringLiteral("added")).toString();
+    query.sortDescending = spec.value(QStringLiteral("sortDescending"), false).toBool();
+    query.userSort = spec.value(QStringLiteral("userSort"), false).toBool();
+    QMetaObject::invokeMethod(m_catalogue, [this, query] {
+        m_catalogue->search(query);
+    });
+}
+
+void CatalogueProxy::clearSearch()
+{
+    QMetaObject::invokeMethod(m_catalogue, [this] { m_catalogue->clearSearch(); });
+}
+
+void CatalogueProxy::fetchRowsPage(const QVariantList& videoIds)
+{
+    QList<qint64> ids;
+    for (const QVariant& id : videoIds)
+        ids.append(id.toLongLong());
+    QMetaObject::invokeMethod(m_catalogue, [this, ids] {
+        m_catalogue->fetchRowsPage(ids);
+    });
+}
+
+void CatalogueProxy::addManualTag(qint64 videoId, const QString& text)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId, text] {
+        m_catalogue->addManualTag(videoId, text);
+    });
+}
+
+void CatalogueProxy::removeTag(qint64 videoId, qint64 tagId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId, tagId] {
+        m_catalogue->removeTag(videoId, tagId);
+    });
+}
+
+void CatalogueProxy::suppressAutoTag(qint64 videoId, qint64 tagId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId, tagId] {
+        m_catalogue->suppressAutoTag(videoId, tagId);
+    });
+}
+
+void CatalogueProxy::resetSuppressions()
+{
+    QMetaObject::invokeMethod(m_catalogue, [this] { m_catalogue->resetSuppressions(); });
+}
+
+void CatalogueProxy::regenerateAutoTags(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->regenerateAutoTags(videoId);
+    });
+}
+
+void CatalogueProxy::requestTags(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->requestTags(videoId);
+    });
 }
 
 void CatalogueProxy::addRoot(const QString& path, bool includeHidden)

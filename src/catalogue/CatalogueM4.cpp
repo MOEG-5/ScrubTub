@@ -102,8 +102,9 @@ void Catalogue::trashVideos(const QList<qint64>& videoIds)
 
 // --------------------------- backup and restore (§4) ------------------------
 
-void Catalogue::exportBackup(const QString& destPath)
+void Catalogue::exportBackup(const QString& destPathIn)
 {
+    const QString destPath = localPathFromUserInput(destPathIn);
     const QFileInfo destInfo(destPath);
     if (destInfo.exists() && !destInfo.isFile()) {
         emit operationFailed(QStringLiteral("Backup destination is not a file"));
@@ -128,8 +129,9 @@ void Catalogue::exportBackup(const QString& destPath)
     emit backupExported(destPath);
 }
 
-void Catalogue::importBackup(const QString& srcPath)
+void Catalogue::importBackup(const QString& srcPathIn)
 {
+    const QString srcPath = localPathFromUserInput(srcPathIn);
     const QFileInfo srcInfo(srcPath);
     if (!srcInfo.isFile()) {
         emit operationFailed(QStringLiteral("Backup file not found: %1").arg(srcPath));

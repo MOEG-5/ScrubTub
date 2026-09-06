@@ -2,8 +2,27 @@
 // Copyright (C) 2026 the itub authors.
 #include "Catalogue.h"
 
+#include <QUrl>
+
+namespace itub {
+
+// QML file dialogs hand the UI file:// URLs (percent-encoded); the catalogue
+// stores and validates native paths. Regular path strings pass through
+// untouched, preserving native spelling (TECH_SPEC.md §3). Defined before
+// the M3/M4 units are included; they use it.
+QString localPathFromUserInput(const QString& input)
+{
+    const QUrl url(input);
+    if (url.isValid() && url.isLocalFile() && !url.toLocalFile().isEmpty())
+        return url.toLocalFile();
+    return input;
+}
+
+} // namespace itub
+
 #include "CatalogueM3.cpp"
 #include "CatalogueM4.cpp"
+
 #include "Database.h"
 #include "SourceScanner.h"
 #include "TagEngine.h"
@@ -121,8 +140,9 @@ void Catalogue::loadExistingState()
     refreshRows();
 }
 
-void Catalogue::addRoot(const QString& path, bool includeHidden)
+void Catalogue::addRoot(const QString& pathIn, bool includeHidden)
 {
+    const QString path = localPathFromUserInput(pathIn);
     const QFileInfo info(path);
     if (!info.isDir()) {
         emit rootRejected(QStringLiteral("Not a directory: %1").arg(path));

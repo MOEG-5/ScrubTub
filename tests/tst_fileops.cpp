@@ -7,6 +7,7 @@
 // artifacts.
 #include <QDir>
 #include <QSignalSpy>
+#include <QUrl>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -35,6 +36,7 @@ class TestFileOps : public QObject {
 private slots:
     void initTestCase();
 
+    void addRootFromFileUrlWithSpecialCharacters();
     void authorizedTrashRemovesOnlyTheSelection();
     void trashAbortsOnIdentityChange();
     void trashFailureKeepsEntry();
@@ -141,6 +143,59 @@ qint64 TestFileOps::idForName(const QString& name) const
             return idx.data(CatalogueModel::IdRole).toLongLong();
     }
     return -1;
+}
+
+// Regression: the QML folder picker hands the catalogue a percent-encoded
+// file:// URL; the root must be added with its decoded native path and
+// scanned normally (user report: "[SubsPlease] ... (1080p) [Batch]").
+void TestFileOps::addRootFromFileUrlWithSpecialCharacters()
+{
+    QVERIFY(makeCatalogue(QStringLiteral("urlroots")));
+    testsupport::FixtureCorpus corpus(
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/corpora/[SubsPlease] Kanojo, Okarishimasu (01-12) (1080p) [Batch]"));
+    QString error;
+    QVERIFY2(corpus.addCopyOfMedia(fixturePath(), QStringLiteral("episode 01.mp4"), &error),
+             qUtf8Printable(error));
+    QVERIFY(corpus.mkdir(QStringLiteral("Season 1/[Group] Name (2024)")));
+    QVERIFY2(corpus.addCopyOfMedia(fixturePath(),
+                                   QStringLiteral("Season 1/[Group] Name (2024)/episode 02.mp4"),
+                                   &error),
+             qUtf8Printable(error));
+
+    // Exactly what FolderDialog.selectedFolder produces.
+    const QString url = QUrl::fromLocalFile(corpus.root() + QLatin1Char('/')).toString();
+    QVERIFY2(url.contains(QStringLiteral("%5BSubsPlease%5D")),
+             "test setup expected a percent-encoded URL");
+    QVERIFY2(url.startsWith(QStringLiteral("file://")), "expected a file:// URL");
+
+    connect(m_cat.get(), &Catalogue::rootRejected, this, [this](const QString& reason) {
+        QFAIL(qUtf8Printable(QStringLiteral("root rejected: %1").arg(reason)));
+    });
+
+    QSignalSpy progress(m_cat.get(), &Catalogue::scanProgress);
+    m_cat->addRoot(url);
+    const bool done = QTest::qWaitFor([&] {
+        for (int i = progress.size() - 1; i >= 0; --i)
+            if (progress.at(i).at(0).value<ScanProgress>().state == QLatin1String("complete"))
+                return true;
+        return false;
+    }, 120000);
+    QVERIFY2(done, "scan of the URL-added root did not complete");
+    drain();
+
+    // Two videos discovered under the decoded native path.
+    bool found01 = false;
+    bool found02 = false;
+    for (int i = 0; i < m_model.rowCount(); ++i) {
+        const QModelIndex row = m_model.index(i, 0);
+        const QString name = row.data(CatalogueModel::NameRole).toString();
+        if (name == QLatin1String("episode 01.mp4"))
+            found01 = true;
+        if (name == QLatin1String("episode 02.mp4"))
+            found02 = true;
+    }
+    QVERIFY2(found01 && found02, "videos under the bracketed folder were not discovered");
 }
 
 void TestFileOps::authorizedTrashRemovesOnlyTheSelection()

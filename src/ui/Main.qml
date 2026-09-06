@@ -577,13 +577,13 @@ ApplicationWindow {
         id: exportDialog
         fileMode: FileDialog.SaveFile
         nameFilters: [qsTr("Catalogue backups (*.db)")] 
-        onAccepted: catalogue.exportBackup(selectedFile.toString().replace("file://", ""))
+        onAccepted: catalogue.exportBackup(selectedFile)
     }
     FileDialog {
         id: importDialog
         fileMode: FileDialog.OpenFile
         nameFilters: [qsTr("Catalogue backups (*.db)")]
-        onAccepted: catalogue.importBackup(selectedFile.toString().replace("file://", ""))
+        onAccepted: catalogue.importBackup(selectedFile)
     }
     Dialog {
         id: clearDialog

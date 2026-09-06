@@ -73,12 +73,41 @@ ApplicationWindow {
                         sortState.sortDescending = !sortState.sortDescending
                         sortState.userSort = true
                         searchDebounce.restart()
+                        saveSettings()
                     }
                 }
                 Button {
                     text: qsTr("Filters")
                     flat: true
                     onClicked: filtersPanel.visible = !filtersPanel.visible
+                }
+                Menu {
+                    id: fileMenu
+                    MenuItem {
+                        text: qsTr("Move selected to Trash…")
+                        onTriggered: trashDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Export catalogue backup…")
+                        onTriggered: exportDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Restore catalogue from backup…")
+                        onTriggered: importDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Clear all previews (%1)").arg(formatIec(cacheBytes))
+                        onTriggered: clearDialog.open()
+                    }
+                    MenuItem {
+                        text: qsTr("Refresh cache usage")
+                        onTriggered: catalogue.requestCacheUsage()
+                    }
+                }
+                Button {
+                    text: qsTr("File")
+                    flat: true
+                    onClicked: fileMenu.popup()
                 }
                 Item { Layout.fillWidth: true }
                 Label {
@@ -88,7 +117,10 @@ ApplicationWindow {
                 CheckBox {
                     text: qsTr("Cached previews only")
                     checked: !hoverSession.enabled
-                    onToggled: hoverSession.enabled = !checked
+                    onToggled: {
+                        hoverSession.enabled = !checked
+                        saveSettings()
+                    }
                     ToolTip.visible: hovered
                     ToolTip.delay: 400
                     ToolTip.text: qsTr("When checked, hovering uses only cached storyboard frames and never reads the original file.")
@@ -426,6 +458,15 @@ ApplicationWindow {
             }
         }
 
+        // Trash / cache state line
+        Label {
+            Layout.fillWidth: true
+            Layout.margins: 4
+            color: "#8b8b96"
+            font.pixelSize: 12
+            text: cacheBytes >= 0 ? qsTr("Preview cache: %1").arg(formatIec(cacheBytes)) : ""
+        }
+
         // Search validation and result count (visible, never silent — §8).
         Label {
             id: searchStatus
@@ -450,6 +491,107 @@ ApplicationWindow {
     FolderDialog {
         id: folderDialog
         onAccepted: catalogue.addRoot(selectedFolder)
+    }
+
+    function formatIec(bytes) {
+        if (bytes < 0)
+            return "?"
+        const mib = 1048576
+        if (bytes >= 1024 * mib)
+            return (bytes / mib).toFixed(2) + " GiB"
+        return (bytes / mib).toFixed(1) + " MiB"
+    }
+
+    property real cacheBytes: -1
+    Connections {
+        target: catalogue
+        function onCacheUsageReady(bytes) { cacheBytes = bytes }
+        function onBackupImported() {
+            errorLabel.text = ""
+            searchStatus.text = qsTr("Catalogue restored from backup")
+        }
+        function onTrashResult(videoIdParam, ok, reason) {
+            if (!ok)
+                errorLabel.text = reason
+        }
+        function onSettingsReady(settings) {
+            grid.cardSize = settings.cardSize
+            sortState.sortDescending = settings.sortDescending
+            hoverSession.enabled = !settings.cachedOnly
+            if (settings.sortKey !== "") {
+                const keys = ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"]
+                const idx = keys.indexOf(settings.sortKey)
+                if (idx >= 0)
+                    sortCombo.currentIndex = idx
+            }
+        }
+    }
+    function saveSettings() {
+        catalogue.saveUiSettings({
+            cardSize: grid.cardSize,
+            sortKey: ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"][sortCombo.currentIndex],
+            sortDescending: sortState.sortDescending,
+            cachedOnly: !hoverSession.enabled
+        })
+    }
+    Connections {
+        target: sortCombo
+        function onActivated(i) { saveSettings() }
+    }
+
+    // Explicit Trash: names the full paths, count, and size; requires
+    // confirmation for that selection (§3).
+    Dialog {
+        id: trashDialog
+        title: qsTr("Move to Trash")
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        width: 480
+        ColumnLayout {
+            width: parent.width
+            Label {
+                text: detailsVideoId < 0
+                    ? qsTr("Select a video first.")
+                    : qsTr("Move %1 (%2) to the system Trash?\nPath: %3")
+                        .arg(detailsName).arg(detailsSizeBytes).arg(detailsPath)
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            Label {
+                text: qsTr("The file is moved to the platform Trash; annotations are kept. There is no permanent-delete fallback.")
+                wrapMode: Text.Wrap
+                color: "#ffb36b"
+                font.pixelSize: 11
+                Layout.fillWidth: true
+            }
+        }
+        onAccepted: {
+            if (detailsVideoId >= 0) {
+                hoverSession.disengage()
+                catalogue.trashVideos([detailsVideoId])
+            }
+        }
+    }
+
+    FileDialog {
+        id: exportDialog
+        fileMode: FileDialog.SaveFile
+        nameFilters: [qsTr("Catalogue backups (*.db)")] 
+        onAccepted: catalogue.exportBackup(selectedFile.toString().replace("file://", ""))
+    }
+    FileDialog {
+        id: importDialog
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Catalogue backups (*.db)")]
+        onAccepted: catalogue.importBackup(selectedFile.toString().replace("file://", ""))
+    }
+    Dialog {
+        id: clearDialog
+        title: qsTr("Clear previews")
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        Label { text: qsTr("Delete all generated posters and storyboards? They regenerate lazily. Ratings, tags, and view counts are never touched.") ; wrapMode: Text.Wrap }
+        onAccepted: catalogue.clearPreviews()
     }
 
     // Query state and debounce (§8: 50 ms).

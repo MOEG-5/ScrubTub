@@ -227,6 +227,95 @@ bool Database::transaction(const std::function<bool()>& fn)
     return exec("COMMIT");
 }
 
+bool Database::backupTo(const QString& destPath, QString* error)
+{
+    if (!m_db) {
+        if (error)
+            *error = QStringLiteral("database not open");
+        return false;
+    }
+    sqlite3* dest = nullptr;
+    const int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_EXRESCODE;
+    if (sqlite3_open_v2(QFile::encodeName(destPath).constData(), &dest, flags,
+                        nullptr) != SQLITE_OK) {
+        if (error)
+            *error = dest ? QString::fromUtf8(sqlite3_errmsg(dest))
+                          : QStringLiteral("could not create backup file");
+        if (dest)
+            sqlite3_close_v2(dest);
+        return false;
+    }
+    sqlite3_backup* backup = sqlite3_backup_init(dest, "main", m_db, "main");
+    if (!backup) {
+        if (error)
+            *error = QString::fromUtf8(sqlite3_errmsg(dest));
+        sqlite3_close_v2(dest);
+        return false;
+    }
+    // -1: copy all pages in one step; the catalogue DB is small.
+    sqlite3_backup_step(backup, -1);
+    const int rc = sqlite3_backup_finish(backup);
+    sqlite3_close_v2(dest);
+    if (rc != SQLITE_OK) {
+        if (error)
+            *error = QString::fromUtf8(sqlite3_errmsg(m_db));
+        QFile::remove(destPath);
+        return false;
+    }
+    if (error)
+        *error = QString();
+    return true;
+}
+
+bool Database::restoreFrom(const QString& srcPath, QString* error)
+{
+    if (!m_db) {
+        if (error)
+            *error = QStringLiteral("database not open");
+        return false;
+    }
+    sqlite3* src = nullptr;
+    const int flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_EXRESCODE;
+    if (sqlite3_open_v2(QFile::encodeName(srcPath).constData(), &src, flags,
+                        nullptr) != SQLITE_OK) {
+        if (error)
+            *error = src ? QString::fromUtf8(sqlite3_errmsg(src))
+                         : QStringLiteral("could not open backup for restore");
+        if (src)
+            sqlite3_close_v2(src);
+        return false;
+    }
+    sqlite3_backup* backup = sqlite3_backup_init(m_db, "main", src, "main");
+    if (!backup) {
+        if (error)
+            *error = QString::fromUtf8(sqlite3_errmsg(m_db));
+        sqlite3_close_v2(src);
+        return false;
+    }
+    sqlite3_backup_step(backup, -1);
+    const int rc = sqlite3_backup_finish(backup);
+    sqlite3_close_v2(src);
+    if (rc != SQLITE_OK) {
+        if (error)
+            *error = QString::fromUtf8(sqlite3_errmsg(m_db));
+        return false;
+    }
+    if (error)
+        *error = QString();
+    return true;
+}
+
+QString Database::integrityCheckError()
+{
+    if (!m_db)
+        return QStringLiteral("database not open");
+    Statement st = prepare("PRAGMA integrity_check");
+    if (!st.isValid() || !st.step())
+        return lastError();
+    const QString result = st.text(0);
+    return result == QLatin1String("ok") ? QString() : result;
+}
+
 bool Database::migrate(QString* error)
 {
     if (!m_db) {

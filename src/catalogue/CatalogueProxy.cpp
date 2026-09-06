@@ -111,6 +111,47 @@ void CatalogueProxy::requestTags(qint64 videoId)
     });
 }
 
+void CatalogueProxy::trashVideos(const QVariantList& videoIds)
+{
+    QList<qint64> ids;
+    for (const QVariant& id : videoIds)
+        ids.append(id.toLongLong());
+    QMetaObject::invokeMethod(m_catalogue, [this, ids] {
+        m_catalogue->trashVideos(ids);
+    });
+}
+
+void CatalogueProxy::exportBackup(const QString& destPath)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, destPath] {
+        m_catalogue->exportBackup(destPath);
+    });
+}
+
+void CatalogueProxy::importBackup(const QString& srcPath)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, srcPath] {
+        m_catalogue->importBackup(srcPath);
+    });
+}
+
+void CatalogueProxy::clearPreviews()
+{
+    QMetaObject::invokeMethod(m_catalogue, [this] { m_catalogue->clearPreviews(); });
+}
+
+void CatalogueProxy::requestCacheUsage()
+{
+    QMetaObject::invokeMethod(m_catalogue, [this] { m_catalogue->requestCacheUsage(); });
+}
+
+void CatalogueProxy::saveUiSettings(const QVariantMap& settings)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, settings] {
+        m_catalogue->saveUiSettingsMap(settings);
+    });
+}
+
 void CatalogueProxy::addRoot(const QString& path, bool includeHidden)
 {
     QMetaObject::invokeMethod(m_catalogue, [this, path, includeHidden] {

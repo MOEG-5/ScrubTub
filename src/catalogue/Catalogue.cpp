@@ -3,6 +3,7 @@
 #include "Catalogue.h"
 
 #include "CatalogueM3.cpp"
+#include "CatalogueM4.cpp"
 #include "Database.h"
 #include "SourceScanner.h"
 #include "TagEngine.h"
@@ -1107,26 +1108,6 @@ QString Catalogue::artifactPath(qint64 videoId, qint64 revision,
                                 const QString& profile) const
 {
     return m_cacheDir + QStringLiteral("/%1-%2-%3.jpg").arg(videoId).arg(revision).arg(profile);
-}
-
-qint64 Catalogue::settingInt(const char* key, qint64 fallback) const
-{
-    Statement st = m_db->prepare("SELECT value FROM settings WHERE key=?");
-    st.bind(1, QString::fromLatin1(key));
-    if (!st.step())
-        return fallback;
-    bool ok = false;
-    const qint64 value = st.text(0).toLongLong(&ok);
-    return ok ? value : fallback;
-}
-
-void Catalogue::setSettingInt(const char* key, qint64 value)
-{
-    Statement st = m_db->prepare(
-        "INSERT OR REPLACE INTO settings(key, value, version) VALUES(?,?,1)");
-    st.bind(1, QString::fromLatin1(key));
-    st.bind(2, QString::number(value));
-    st.run();
 }
 
 } // namespace itub

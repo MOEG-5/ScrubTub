@@ -18,6 +18,10 @@ public:
 
     explicit FixtureCorpus(const QString& rootDir);
 
+    // Corpora must live on a filesystem where the platform Trash works for
+    // trash-mutation tests; /tmp mounts usually reject the trash root.
+    static QString defaultBaseDir();
+
     // Copies sourceVideo into the corpus under the given name (reflink where
     // the filesystem supports it, plain copy otherwise). The source file is
     // only ever read. Fails once the media-file or byte budget is exhausted.

@@ -47,6 +47,17 @@ public:
     // Runs fn inside BEGIN IMMEDIATE/COMMIT; rolls back on false or throw.
     bool transaction(const std::function<bool()>& fn);
 
+    // Consistent online backup of this database into destPath using SQLite's
+    // backup API (includes WAL content — never copy only the live file).
+    bool backupTo(const QString& destPath, QString* error);
+
+    // Copies the database at srcPath into this (open) database, replacing
+    // its contents; used after the source has been validated.
+    bool restoreFrom(const QString& srcPath, QString* error);
+
+    // PRAGMA integrity_check; empty result string means ok.
+    QString integrityCheckError();
+
     sqlite3* handle() const { return m_db; }
 
     // Schema management: applies migrations transactionally, refuses newer

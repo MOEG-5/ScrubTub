@@ -142,6 +142,22 @@ public slots:
     void regenerateAutoTags(qint64 videoId);
     void requestTags(qint64 videoId);
 
+    // Explicit file operations and recovery (§3, §4, milestone 4).
+    // Move videos to the OS Trash/Recycle Bin. Identity is re-checked
+    // immediately before each operation; failures keep the catalogue entry
+    // and are reported per item; there is no permanent-delete fallback.
+    void trashVideos(const QList<qint64>& videoIds);
+
+    // Backup/export and restore (§4): consistent snapshot including all
+    // annotations; restore validates schema/integrity on an app-owned copy
+    // before replacing the active database and preserves the prior one.
+    void exportBackup(const QString& destPath);
+    void importBackup(const QString& srcPath);
+
+    // Cache controls (§6): only owned artifacts are ever removed.
+    void clearPreviews();
+    void requestCacheUsage();
+
 signals:
     void rootAdded(const itub::RootInfo& root);
     void rootRemoved(qint64 rootId);
@@ -157,6 +173,11 @@ signals:
                          const QString& validationError);
     void tagsReady(qint64 videoId, const QVariantList& tags);
     void tagListChanged();
+    void trashResult(qint64 videoId, bool ok, const QString& reason);
+    void backupExported(const QString& destPath);
+    void backupImported();
+    void cacheUsageReady(qint64 bytes);
+    void settingsReady(const QVariantMap& settings);
     void operationFailed(const QString& message);
 
 private:
@@ -191,6 +212,13 @@ private:
     QString artifactPath(qint64 videoId, qint64 revision, const QString& profile) const;
     qint64 settingInt(const char* key, qint64 fallback) const;
     void setSettingInt(const char* key, qint64 value);
+    QString settingText(const char* key, const QString& fallback) const;
+    void setSettingText(const char* key, const QString& value);
+public:
+    void saveUiSettingsMap(const QVariantMap& settings);
+    void restoreSettings();
+
+private:
     void refreshSearchRecord(qint64 videoId);
     void applyAutoTags(qint64 videoId, const ProbeResult& probe);
 

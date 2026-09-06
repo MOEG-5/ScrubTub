@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QStandardPaths>
 
 namespace itub::testsupport {
 
@@ -13,6 +14,13 @@ FixtureCorpus::FixtureCorpus(const QString& rootDir)
     : m_dir(rootDir)
 {
     m_dir.mkpath(QStringLiteral("."));
+}
+
+QString FixtureCorpus::defaultBaseDir()
+{
+    const QString home =
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    return home + QStringLiteral("/.itub-agent-test-corpora");
 }
 
 bool FixtureCorpus::accountBytes(qint64 bytes, QString* error)

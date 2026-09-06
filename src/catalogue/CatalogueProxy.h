@@ -46,6 +46,14 @@ public:
     Q_INVOKABLE void resetSuppressions();
     Q_INVOKABLE void regenerateAutoTags(qint64 videoId);
     Q_INVOKABLE void requestTags(qint64 videoId);
+
+    // Milestone 4: explicit file operations and recovery.
+    Q_INVOKABLE void trashVideos(const QVariantList& videoIds);
+    Q_INVOKABLE void exportBackup(const QString& destPath);
+    Q_INVOKABLE void importBackup(const QString& srcPath);
+    Q_INVOKABLE void clearPreviews();
+    Q_INVOKABLE void requestCacheUsage();
+    Q_INVOKABLE void saveUiSettings(const QVariantMap& settings);
     Q_INVOKABLE void loadExistingState();
 
 signals:
@@ -61,6 +69,11 @@ signals:
                          const QString& validationError);
     void tagsReady(qint64 videoId, const QVariantList& tags);
     void tagListChanged();
+    void trashResult(qint64 videoId, bool ok, const QString& reason);
+    void backupExported(const QString& destPath);
+    void backupImported();
+    void cacheUsageReady(qint64 bytes);
+    void settingsReady(const QVariantMap& settings);
 
 private:
     Catalogue* m_catalogue;

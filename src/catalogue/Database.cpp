@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS meta(
     value TEXT NOT NULL
 );
 
+CREATE TABLE settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE roots(
     id INTEGER PRIMARY KEY,
     path TEXT NOT NULL,
@@ -44,6 +50,7 @@ CREATE TABLE videos(
     display_width INTEGER CHECK(display_width IS NULL OR display_width > 0),
     display_height INTEGER CHECK(display_height IS NULL OR display_height > 0),
     rotation_deg INTEGER CHECK(rotation_deg IS NULL OR rotation_deg IN (0,90,180,270)),
+    stream_index INTEGER,
     codec TEXT,
     rating INTEGER CHECK(rating IS NULL OR (rating BETWEEN 1 AND 5)),
     views INTEGER NOT NULL DEFAULT 0 CHECK(views >= 0),

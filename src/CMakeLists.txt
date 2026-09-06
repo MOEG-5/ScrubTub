@@ -8,6 +8,7 @@ add_library(itub_core STATIC
     catalogue/CatalogueProxy.h catalogue/CatalogueProxy.cpp
     catalogue/VideoRow.h
     media/Probe.h media/Probe.cpp
+    media/Extract.h media/Extract.cpp
 )
 
 target_include_directories(itub_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

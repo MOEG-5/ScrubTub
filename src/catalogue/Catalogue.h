@@ -1,28 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 the itub authors.
-// Catalogue store and scan coordinator (TECH_SPEC.md sections 1, 4, 5).
+// Catalogue store, scan coordinator, and media job scheduler
+// (TECH_SPEC.md sections 1, 4, 5, 6).
 //
 // Lives on one dedicated worker thread that owns the SQLite connection.
 // Public slots are invoked through queued connections; results come back as
 // signals. The UI thread never touches SQLite, the filesystem, or processes.
+// Probe/poster/storyboard subprocesses run on a bounded pool — at most two
+// active media processes combined (§5).
 #pragma once
 
 #include "VideoRow.h"
 
 #include <QObject>
-#include <QProcess>
 #include <QStringList>
 
 #include <atomic>
 #include <memory>
+#include <optional>
 
 class QLockFile;
+class QThreadPool;
 class QTimer;
 
 namespace itub {
 
 class Database;
 struct ProbeResult;
+struct ExtractResult;
 
 class Catalogue : public QObject {
     Q_OBJECT
@@ -33,11 +38,13 @@ public:
     // Opens/creates the database, applies migrations, resets interrupted jobs,
     // and takes the profile lock. Call on this object's thread.
     bool initialize(const QString& profileDataDir, const QString& ffprobePath,
-                    QString* error);
+                    const QString& ffmpegPath, QString* error);
 
-    // Test hooks.
-    void setProbeConcurrency(int n) { m_probeConcurrency = n; }
+    // Tuning (§5: proposed settings to validate, not immutable constants).
+    void setProbeConcurrency(int n) { m_jobConcurrency = n; }
     void setProbeTimeoutMs(int ms) { m_probeTimeoutMs = ms; }
+    void setPreviewTimeoutMs(int ms) { m_previewTimeoutMs = ms; }
+    void setDiskCacheLimitBytes(qint64 bytes) { m_diskCacheLimit = bytes; }
 
 public slots:
     // Roots. Rejection reasons (duplicate, nested, symlink, nonexistent) are
@@ -53,41 +60,67 @@ public slots:
 
     // Annotations (catalogue-only operations).
     void setRating(qint64 videoId, int rating); // 0 clears
-    void incrementViews(qint64 videoId);        // M3 wiring; committed transactionally
+    void incrementViews(qint64 videoId);
     void refreshRows();
 
+    // Preview artifacts. Poster generation is queued automatically after a
+    // successful probe; storyboards are queued on demand (hover or explicit
+    // precompute).
+    void requestStoryboard(qint64 videoId);
+    void requestPoster(qint64 videoId);
+
+    // Open in the system default player (§9). Counts one view per accepted
+    // launch request; failed handoffs do not count.
+    void openInDefaultPlayer(qint64 videoId);
+
 signals:
-    void initialized(bool ok);
     void rootAdded(const itub::RootInfo& root);
     void rootRemoved(qint64 rootId);
     void rootRejected(const QString& reason);
     void scanProgress(const itub::ScanProgress& progress);
     void rowsChanged(const QList<itub::VideoRow>& rows, bool reset);
     void ratingCommitted(qint64 videoId, int rating);
+    void cacheEntryChanged(qint64 videoId, const QString& profile);
     void operationFailed(const QString& message);
 
 private:
-    struct ActiveProbe {
+    struct ActiveJob {
+        qint64 jobId = 0;
         qint64 videoId = 0;
         qint64 revision = 0;
-        qint64 jobId = 0;
-        std::unique_ptr<QProcess> process;
-        bool timedOut = false;
+        QString kind;                 // probe|poster|storyboard
+        qint64 durationMs = -1;       // from the probe result
+        int streamIndex = 0;          // selected video stream
+        std::atomic_bool cancelled{false};
+        // PID of the running child process, 0 when none. Registration lets
+        // cancellation kill process trees promptly (§11).
+        std::atomic<qint64> pid{0};
     };
 
     void startScan(qint64 rootId, bool force);
     void runEnumerationLocked(qint64 rootId, bool force);
-    void dispatchProbeJobs();
-    void finishProbeJob(ActiveProbe* job, int exitCode, QProcess::ExitStatus status);
-    void killActiveProbes();
+    void ensureDispatchTimer();
+    void dispatchJobs();
+    void runJob(ActiveJob* job, const QString& absPath);
+    void finishJob(ActiveJob* job, std::optional<ProbeResult> probe,
+                   std::optional<ExtractResult> extract);
+    void killActiveJobs();
     bool applyProbeResult(qint64 videoId, qint64 revision, const ProbeResult& result);
+    void applyExtractResult(ActiveJob* job, const ExtractResult& result);
+    void enqueuePreviewJobs(qint64 videoId, bool includeStoryboard);
+    void enforceCacheLimit();
     void emitProgress(const QString& state);
     void emitRows(const QList<VideoRow>& rows);
     VideoRow readRow(qint64 videoId);
+    QString artifactPath(qint64 videoId, qint64 revision, const QString& profile) const;
+    qint64 settingInt(const char* key, qint64 fallback) const;
+    void setSettingInt(const char* key, qint64 value);
 
     std::unique_ptr<Database> m_db;
     QString m_profileDataDir;
+    QString m_cacheDir;
     QString m_ffprobePath;
+    QString m_ffmpegPath;
     std::unique_ptr<QLockFile> m_profileLock;
 
     std::atomic_bool m_pauseRequested{false};
@@ -99,10 +132,13 @@ private:
     quint64 m_discovered = 0;
     quint64 m_errors = 0;
     quint64 m_probed = 0;
-    QTimer* m_probeTimer = nullptr;
-    QList<ActiveProbe*> m_activeProbes;
-    int m_probeConcurrency = 2;   // §5: at most two active probe/decode processes
-    int m_probeTimeoutMs = 30000; // §5: 30 s default probe timeout
+    QTimer* m_dispatchTimer = nullptr;
+    QThreadPool* m_pool = nullptr;
+    QList<ActiveJob*> m_activeJobs;
+    int m_jobConcurrency = 2;      // §5: at most two active media processes
+    int m_probeTimeoutMs = 30000;  // §5: 30 s probe timeout
+    int m_previewTimeoutMs = 60000; // §5: 60 s per-preview-job timeout
+    qint64 m_diskCacheLimit = 5LL * 1024 * 1024 * 1024; // §6: 5 GiB default
 };
 
 } // namespace itub

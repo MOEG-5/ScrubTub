@@ -4,15 +4,22 @@
 
 #include "Database.h"
 #include "SourceScanner.h"
+#include "media/Extract.h"
 #include "media/Probe.h"
 
 #include <QDateTime>
 #include <QDir>
+#include <QDesktopServices>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QLockFile>
+#include <QProcess>
+#include <QThreadPool>
 #include <QTimer>
+#include <QUrl>
 
 #include <sqlite3.h>
 
@@ -36,6 +43,11 @@ QString fileNameOf(const QString& path)
     return slash >= 0 ? path.mid(slash + 1) : path;
 }
 
+// Cache profile identifiers: thumbnail quality changes create new versioned
+// keys and retire old entries (§6).
+const char* kPosterProfile = "poster-320-v1";
+const char* kStoryboardProfile = "sb-320-v1";
+
 } // namespace
 
 Catalogue::Catalogue(QObject* parent)
@@ -47,14 +59,25 @@ Catalogue::Catalogue(QObject* parent)
     qRegisterMetaType<ScanProgress>();
 }
 
-Catalogue::~Catalogue() = default;
+Catalogue::~Catalogue()
+{
+    if (m_pool) {
+        m_cancelRequested.store(true);
+        killActiveJobs();
+        m_pool->waitForDone();
+        m_pool->clear();
+    }
+}
 
 bool Catalogue::initialize(const QString& profileDataDir, const QString& ffprobePath,
-                           QString* error)
+                           const QString& ffmpegPath, QString* error)
 {
     m_profileDataDir = profileDataDir;
     m_ffprobePath = ffprobePath;
+    m_ffmpegPath = ffmpegPath;
     QDir().mkpath(profileDataDir);
+    m_cacheDir = profileDataDir + QStringLiteral("/thumbs");
+    QDir().mkpath(m_cacheDir);
 
     // One application instance owns a profile via a lock (§4).
     m_profileLock = std::make_unique<QLockFile>(profileDataDir + QStringLiteral("/catalogue.lock"));
@@ -412,15 +435,15 @@ void Catalogue::runEnumerationLocked(qint64 rootId, bool force)
 
     if (!result.completed) {
         // Cancelled scan: no missing-marking, prior availability retained (§5).
-        killActiveProbes();
+        killActiveJobs();
         m_scanActive.store(false);
         emitProgress(QStringLiteral("cancelled"));
         return;
     }
     m_errors += static_cast<quint64>(result.issues.size());
 
-    // Complete enumeration: unseen entries become missing; their queued probes
-    // are pointless and are removed. Annotations are preserved (§5).
+    // Complete enumeration: unseen entries become missing; their queued
+    // probes are pointless and are removed. Annotations are preserved (§5).
     m_db->transaction([this, rootId, generation] {
         Statement missing = m_db->prepare(
             "UPDATE videos SET availability='missing' WHERE root_id=? AND "
@@ -441,44 +464,56 @@ void Catalogue::runEnumerationLocked(qint64 rootId, bool force)
     });
 
     emitProgress(QStringLiteral("probing"));
-    if (!m_probeTimer) {
-        m_probeTimer = new QTimer(this);
-        m_probeTimer->setSingleShot(true);
-        connect(m_probeTimer, &QTimer::timeout, this, &Catalogue::dispatchProbeJobs);
-    }
-    m_probeTimer->start(0);
+    ensureDispatchTimer();
+    m_dispatchTimer->start(0);
 }
 
-void Catalogue::dispatchProbeJobs()
+void Catalogue::ensureDispatchTimer()
 {
-    if (!m_scanActive.load())
-        return;
+    if (!m_dispatchTimer) {
+        m_dispatchTimer = new QTimer(this);
+        m_dispatchTimer->setSingleShot(true);
+        connect(m_dispatchTimer, &QTimer::timeout, this, &Catalogue::dispatchJobs);
+    }
+}
+
+void Catalogue::dispatchJobs()
+{
     if (m_cancelRequested.load()) {
-        killActiveProbes();
+        killActiveJobs();
         m_scanActive.store(false);
         emitProgress(QStringLiteral("cancelled"));
         return;
     }
     if (m_pauseRequested.load()) {
         // Paused background work starts no new jobs (§5); retry shortly.
-        m_probeTimer->start(200);
+        if (m_scanActive.load()) {
+            ensureDispatchTimer();
+            m_dispatchTimer->start(200);
+        }
         return;
     }
-    while (m_activeProbes.size() < m_probeConcurrency) {
+    while (m_activeJobs.size() < m_jobConcurrency) {
+        // Priority: posters (visible cards) before remaining probes, and
+        // background storyboards last (§5).
         Statement job = m_db->prepare(
-            "SELECT j.id, j.video_id, j.revision, v.cmp_key, r.path FROM jobs j "
+            "SELECT j.id, j.video_id, j.revision, j.kind, v.cmp_key, r.path FROM jobs j "
             "JOIN videos v ON v.id = j.video_id JOIN roots r ON r.id = v.root_id "
-            "WHERE j.kind='probe' AND j.state='queued' ORDER BY j.id LIMIT 1");
+            "WHERE j.state='queued' "
+            "ORDER BY CASE j.kind WHEN 'poster' THEN 0 WHEN 'probe' THEN 1 ELSE 2 END, "
+            "j.id LIMIT 1");
         if (!job.step())
             break;
         const qint64 jobId = job.int64(0);
         const qint64 videoId = job.int64(1);
         const qint64 revision = job.int64(2);
-        const QString rel = job.text(3);
-        const QString rootPath = job.text(4);
+        const QString kind = job.text(3);
+        const QString rel = job.text(4);
+        const QString rootPath = job.text(5);
 
         // A queued job for an older revision is obsolete; drop it (§5).
-        Statement rev = m_db->prepare("SELECT revision FROM videos WHERE id=?");
+        Statement rev = m_db->prepare(
+            "SELECT revision, duration_ms, stream_index FROM videos WHERE id=?");
         rev.bind(1, videoId);
         if (!rev.step() || rev.int64(0) != revision) {
             Statement del = m_db->prepare("DELETE FROM jobs WHERE id=?");
@@ -486,49 +521,32 @@ void Catalogue::dispatchProbeJobs()
             del.run();
             continue;
         }
+        const qint64 durationMs = rev.isNull(1) ? -1 : rev.int64(1);
+        const int streamIndex = rev.isNull(2) ? 0 : static_cast<int>(rev.int64(2));
 
         Statement mark = m_db->prepare("UPDATE jobs SET state='running' WHERE id=?");
         mark.bind(1, jobId);
         mark.run();
 
-        auto probe = std::make_unique<QProcess>();
-#ifdef Q_OS_UNIX
-        // Own process group so cancellation kills the whole tree (§3).
-        probe->setChildProcessModifier([] { ::setsid(); });
-#endif
-        probe->start(m_ffprobePath, Probe::arguments(rootPath + QLatin1Char('/') + rel));
-        if (!probe->waitForStarted(10000)) {
-            Statement err = m_db->prepare("UPDATE jobs SET state='queued' WHERE id=?");
-            err.bind(1, jobId);
-            err.run();
-            emit operationFailed(QStringLiteral("Cannot start ffprobe: %1")
-                                     .arg(probe->errorString()));
-            break;
-        }
-        auto* active = new ActiveProbe{videoId, revision, jobId, std::move(probe), false};
-        m_activeProbes.append(active);
-        QProcess* proc = active->process.get();
-        connect(proc, &QProcess::finished, this,
-                [this, active](int code, QProcess::ExitStatus status) {
-                    finishProbeJob(active, code, status);
-                });
-        // Per-job watchdog: a timeout is visible and retryable, never a
-        // silent exclusion (§5).
-        QTimer::singleShot(m_probeTimeoutMs, this, [this, active] {
-            if (!m_activeProbes.contains(active))
-                return;
-            active->timedOut = true;
-#ifdef Q_OS_UNIX
-            ::kill(-active->process->processId(), SIGTERM);
-#else
-            active->process->terminate();
-#endif
-        });
+        auto* active = new ActiveJob;
+        active->jobId = jobId;
+        active->videoId = videoId;
+        active->revision = revision;
+        active->kind = kind;
+        active->durationMs = durationMs;
+        active->streamIndex = streamIndex;
+        m_activeJobs.append(active);
+
+        const QString absPath = rootPath + QLatin1Char('/') + rel;
+        if (!m_pool)
+            m_pool = new QThreadPool(this);
+        m_pool->setMaxThreadCount(m_jobConcurrency);
+        m_pool->start([this, active, absPath] { runJob(active, absPath); });
     }
 
-    if (m_activeProbes.isEmpty() && m_scanActive.load()) {
+    if (m_activeJobs.isEmpty() && m_scanActive.load()) {
         Statement queued =
-            m_db->prepare("SELECT COUNT(*) FROM jobs WHERE state='queued' AND kind='probe'");
+            m_db->prepare("SELECT COUNT(*) FROM jobs WHERE state='queued'");
         queued.step();
         if (queued.int64(0) == 0) {
             m_scanActive.store(false);
@@ -537,70 +555,106 @@ void Catalogue::dispatchProbeJobs()
     }
 }
 
-void Catalogue::finishProbeJob(ActiveProbe* active, int exitCode, QProcess::ExitStatus status)
+void Catalogue::runJob(ActiveJob* job, const QString& absPath)
 {
-    if (!m_activeProbes.removeOne(active))
+    // Pool thread: never touches the DB; results are queued back to the
+    // catalogue thread (§2).
+    const PidSink sink = [job](qint64 pid) { job->pid.store(pid); };
+    if (job->kind == QLatin1String("probe")) {
+        const ProbeResult result = Probe::run(m_ffprobePath, absPath, m_probeTimeoutMs,
+                                              sink, &job->cancelled);
+        QMetaObject::invokeMethod(this,
+                                  [this, job, result] { finishJob(job, result, {}); },
+                                  Qt::QueuedConnection);
         return;
+    }
 
-    const QByteArray out = active->process->readAllStandardOutput();
-    const QByteArray err = active->process->readAllStandardError().left(64 * 1024);
-    active->process.reset(); // release file handles promptly
+    ExtractResult result;
+    if (job->kind == QLatin1String("poster")) {
+        PosterRequest request;
+        request.ffmpegPath = m_ffmpegPath;
+        request.sourcePath = absPath;
+        request.outputPath = artifactPath(job->videoId, job->revision,
+                                          QLatin1String(kPosterProfile));
+        request.durationMs = job->durationMs;
+        request.selectedStreamIndex = job->streamIndex;
+        request.timeoutMs = m_previewTimeoutMs;
+        result = Extract::poster(request, sink, &job->cancelled);
+    } else if (job->kind == QLatin1String("storyboard")) {
+        StoryboardRequest request;
+        request.ffmpegPath = m_ffmpegPath;
+        request.sourcePath = absPath;
+        request.outputDir = m_cacheDir + QStringLiteral("/tmp-%1").arg(job->videoId);
+        request.outputPath = artifactPath(job->videoId, job->revision,
+                                          QLatin1String(kStoryboardProfile));
+        request.durationMs = job->durationMs;
+        request.selectedStreamIndex = job->streamIndex;
+        request.timeoutMs = m_previewTimeoutMs;
+        result = Extract::storyboard(request, sink, &job->cancelled);
+    } else {
+        result.error = QStringLiteral("unknown job kind");
+    }
+    QMetaObject::invokeMethod(this,
+                              [this, job, result] { finishJob(job, {}, result); },
+                              Qt::QueuedConnection);
+}
+
+void Catalogue::finishJob(ActiveJob* job, std::optional<ProbeResult> probe,
+                          std::optional<ExtractResult> extract)
+{
+    if (!m_activeJobs.removeOne(job))
+        return;
+    job->pid.store(0);
 
     if (m_cancelRequested.load()) {
-        // Cancellation is not a probe failure: the job returns to queued and
-        // is retried by the next scan (§5: interrupted jobs return to queued).
+        // Cancellation is not a failure: the job returns to queued (§5).
         Statement requeue = m_db->prepare("UPDATE jobs SET state='queued' WHERE id=?");
-        requeue.bind(1, active->jobId);
+        requeue.bind(1, job->jobId);
         requeue.run();
-        delete active;
-        dispatchProbeJobs();
+        delete job;
+        dispatchJobs();
         return;
     }
 
-    ProbeResult parsed = Probe::parse(out);
-    if (active->timedOut) {
-        parsed.ok = false;
-        parsed.failKind = ProbeResult::FailKind::Timeout;
-        parsed.error = QStringLiteral("ffprobe timed out");
-    } else if (status != QProcess::NormalExit) {
-        parsed.ok = false;
-        parsed.failKind = ProbeResult::FailKind::TransientIo;
-        parsed.error = QStringLiteral("ffprobe was terminated");
-    } else if (exitCode != 0 && !parsed.ok) {
-        parsed.failKind = ProbeResult::FailKind::BadMedia;
-        parsed.error = QStringLiteral("ffprobe exit %1: %2")
-                           .arg(exitCode)
-                           .arg(QString::fromUtf8(err.left(2000)));
+    // Stale result for a superseded revision: discard it entirely (§5).
+    Statement rev = m_db->prepare("SELECT revision FROM videos WHERE id=?");
+    rev.bind(1, job->videoId);
+    const bool stale = !rev.step() || rev.int64(0) != job->revision;
+    if (stale) {
+        Statement del = m_db->prepare("DELETE FROM jobs WHERE id=?");
+        del.bind(1, job->jobId);
+        del.run();
+        delete job;
+        dispatchJobs();
+        return;
     }
 
-    const bool finished = applyProbeResult(active->videoId, active->revision, parsed);
-    if (finished) {
-        Statement del = m_db->prepare("DELETE FROM jobs WHERE id=?");
-        del.bind(1, active->jobId);
-        del.run();
+    if (probe.has_value()) {
+        const bool finished = applyProbeResult(job->videoId, job->revision, probe.value());
+        if (finished) {
+            Statement del = m_db->prepare("DELETE FROM jobs WHERE id=?");
+            del.bind(1, job->jobId);
+            del.run();
+        }
+    } else if (extract.has_value()) {
+        applyExtractResult(job, extract.value());
     }
-    delete active;
-    dispatchProbeJobs();
+    delete job;
+    dispatchJobs();
 }
 
 // Returns true when the job is done (success or exhausted); false when it was
 // re-queued for its one automatic retry (§5).
 bool Catalogue::applyProbeResult(qint64 videoId, qint64 revision, const ProbeResult& result)
 {
-    // Stale result for a superseded revision: discard it entirely.
-    Statement rev = m_db->prepare("SELECT revision FROM videos WHERE id=?");
-    rev.bind(1, videoId);
-    if (!rev.step() || rev.int64(0) != revision)
-        return true;
-
     m_probed += 1;
     if (result.ok) {
         m_db->transaction([this, videoId, revision, &result] {
             Statement upd = m_db->prepare(
                 "UPDATE videos SET probe_status='ok', availability='available', "
                 "duration_ms=?, codec=?, coded_width=?, coded_height=?, "
-                "display_width=?, display_height=?, rotation_deg=?, probe_error=NULL "
-                "WHERE id=? AND revision=?");
+                "display_width=?, display_height=?, rotation_deg=?, stream_index=?, "
+                "probe_error=NULL WHERE id=? AND revision=?");
             if (result.durationMs > 0)
                 upd.bind(1, result.durationMs);
             else
@@ -618,11 +672,13 @@ bool Catalogue::applyProbeResult(qint64 videoId, qint64 revision, const ProbeRes
                 upd.bindNull(6);
             }
             upd.bind(7, result.rotationDeg);
-            upd.bind(8, videoId);
-            upd.bind(9, revision);
+            upd.bind(8, result.selectedStreamIndex);
+            upd.bind(9, videoId);
+            upd.bind(10, revision);
             return upd.run();
         });
         emitRows(QList<VideoRow>{readRow(videoId)});
+        enqueuePreviewJobs(videoId, false);
         return true;
     }
 
@@ -632,6 +688,7 @@ bool Catalogue::applyProbeResult(qint64 videoId, qint64 revision, const ProbeRes
 
     bool retried = false;
     m_db->transaction([this, videoId, revision, timeout, transient, &result, &retried] {
+        Q_UNUSED(timeout);
         if (transient) {
             // One automatic retry for transient I/O failures, then explicit (§5).
             Statement retry = m_db->prepare(
@@ -665,25 +722,197 @@ bool Catalogue::applyProbeResult(qint64 videoId, qint64 revision, const ProbeRes
     return !retried;
 }
 
-void Catalogue::killActiveProbes()
+void Catalogue::enqueuePreviewJobs(qint64 videoId, bool includeStoryboard)
 {
-    for (ActiveProbe* active : m_activeProbes) {
-        QProcess* proc = active->process.get();
+    // Posters are generated before storyboards (§6); storyboards are queued
+    // on demand (hover or explicit precompute).
+    Statement info = m_db->prepare(
+        "SELECT revision, duration_ms, stream_index, probe_status FROM videos WHERE id=?");
+    info.bind(1, videoId);
+    if (!info.step())
+        return;
+    const qint64 revision = info.int64(0);
+    const qint64 durationMs = info.isNull(1) ? -1 : info.int64(1);
+    const int streamIndex = info.isNull(2) ? 0 : static_cast<int>(info.int64(2));
+    if (info.text(3) != QLatin1String("ok"))
+        return;
+
+    Statement posterJob = m_db->prepare(
+        "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
+        "VALUES(?,?,'poster','queued')");
+    posterJob.bind(1, videoId);
+    posterJob.bind(2, revision);
+    posterJob.run();
+    if (includeStoryboard && durationMs > 0) {
+        Statement sbJob = m_db->prepare(
+            "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
+            "VALUES(?,?,'storyboard','queued')");
+        sbJob.bind(1, videoId);
+        sbJob.bind(2, revision);
+        sbJob.run();
+    }
+    ensureDispatchTimer();
+    m_dispatchTimer->start(0);
+}
+
+void Catalogue::requestStoryboard(qint64 videoId)
+{
+    // Lazy generation: a missing fallback storyboard is produced through
+    // low-priority background work on first need (§6).
+    enqueuePreviewJobs(videoId, true);
+}
+
+void Catalogue::requestPoster(qint64 videoId)
+{
+    enqueuePreviewJobs(videoId, false);
+}
+
+void Catalogue::applyExtractResult(ActiveJob* job, const ExtractResult& result)
+{
+    const QString profile = job->kind == QLatin1String("poster")
+        ? QLatin1String(kPosterProfile) : QLatin1String(kStoryboardProfile);
+
+    if (!result.ok) {
+        m_errors += 1;
+        m_db->transaction([this, job, &result]() -> bool {
+            // One automatic retry for transient extraction failures (§5).
+            Statement retry = m_db->prepare(
+                "UPDATE jobs SET retries=retries+1, state='queued', error=? WHERE "
+                "id=? AND state='running' AND retries < 1");
+            retry.bind(1, result.error);
+            retry.bind(2, job->jobId);
+            retry.run();
+            if (m_db->lastChangeCount() > 0)
+                return true;
+            Statement fail = m_db->prepare(
+                "UPDATE jobs SET state='error', error=? WHERE id=?");
+            fail.bind(1, result.error.left(500));
+            fail.bind(2, job->jobId);
+            fail.run();
+            return true;
+        });
+        emit operationFailed(QStringLiteral("Preview generation failed: %1")
+                                 .arg(result.error.left(200)));
+        dispatchJobs();
+        return;
+    }
+
+    const qint64 bytes = QFileInfo(result.outputPath).size();
+    const QString relArtifact = QDir(m_cacheDir).relativeFilePath(result.outputPath);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_db->transaction([this, job, &result, &relArtifact, bytes, now] {
+        Statement entry = m_db->prepare(
+            "INSERT OR REPLACE INTO cache_entries(video_id, revision, profile, kind, "
+            "rel_path, bytes, sample_times, last_access_ms) VALUES(?,?,?,?,?,?,?,?)");
+        entry.bind(1, job->videoId);
+        entry.bind(2, job->revision);
+        entry.bind(3, job->kind == QLatin1String("poster")
+                          ? QLatin1String(kPosterProfile) : QLatin1String(kStoryboardProfile));
+        entry.bind(4, job->kind);
+        entry.bind(5, relArtifact);
+        entry.bind(6, bytes);
+        if (result.sampleTimesMs.isEmpty()) {
+            entry.bindNull(7);
+        } else {
+            QJsonArray times;
+            for (const qint64 t : result.sampleTimesMs)
+                times.append(t);
+            entry.bind(7, QString::fromUtf8(
+                              QJsonDocument(times).toJson(QJsonDocument::Compact)));
+        }
+        entry.bind(8, now);
+        return entry.run();
+    });
+    Statement del = m_db->prepare("DELETE FROM jobs WHERE id=?");
+    del.bind(1, job->jobId);
+    del.run();
+    emit cacheEntryChanged(job->videoId, profile);
+    enforceCacheLimit();
+    dispatchJobs();
+}
+
+void Catalogue::enforceCacheLimit()
+{
+    // Evict least-recently-used owned artifacts only; ratings and tags are
+    // never touched (§6). LRU access times are per entry, not per mouse move.
+    const qint64 limit = settingInt("disk_cache_bytes", m_diskCacheLimit);
+    for (;;) {
+        Statement sum = m_db->prepare("SELECT COALESCE(SUM(bytes),0) FROM cache_entries");
+        sum.step();
+        const qint64 total = sum.int64(0);
+        if (total <= limit)
+            return;
+        Statement oldest = m_db->prepare(
+            "SELECT video_id, profile, rel_path FROM cache_entries "
+            "ORDER BY last_access_ms ASC LIMIT 1");
+        if (!oldest.step())
+            return;
+        QFile::remove(m_cacheDir + QLatin1Char('/') + oldest.text(2));
+        Statement del = m_db->prepare(
+            "DELETE FROM cache_entries WHERE video_id=? AND profile=?");
+        del.bind(1, oldest.int64(0));
+        del.bind(2, oldest.text(1));
+        del.run();
+    }
+}
+
+void Catalogue::openInDefaultPlayer(qint64 videoId)
+{
+    // §9: only catalogue videos that currently resolve to regular files.
+    Statement info = m_db->prepare(
+        "SELECT v.rel_path, r.path FROM videos v JOIN roots r ON r.id = v.root_id "
+        "WHERE v.id=?");
+    info.bind(1, videoId);
+    if (!info.step()) {
+        emit operationFailed(QStringLiteral("Unknown video"));
+        return;
+    }
+    const QString absPath = info.text(1) + QLatin1Char('/') + info.text(0);
+    const QFileInfo fileInfo(absPath);
+    if (!fileInfo.isFile() || fileInfo.isSymLink()) {
+        emit operationFailed(QStringLiteral("File is not available: %1").arg(absPath));
+        return;
+    }
+    // §9: the return value means the request was handed to the system, not
+    // that playback succeeded. One view per accepted launch action; failed
+    // handoffs do not count.
+    if (QDesktopServices::openUrl(QUrl::fromLocalFile(absPath)))
+        incrementViews(videoId);
+}
+
+void Catalogue::killActiveJobs()
+{
+    for (ActiveJob* job : m_activeJobs) {
+        job->cancelled.store(true);
+        const qint64 pid = job->pid.load();
+        if (pid > 0) {
 #ifdef Q_OS_UNIX
-        ::kill(-proc->processId(), SIGTERM);
+            ::kill(-pid, SIGTERM);
 #else
-        proc->terminate();
+            QProcess process;
+            process.start(QStringLiteral("taskkill"),
+                          {QStringLiteral("/PID"), QString::number(pid),
+                           QStringLiteral("/T"), QStringLiteral("/F")});
+            process.waitForFinished(1000);
 #endif
+        }
     }
     // Survivors are SIGKILLed after 2 s (§11 cancel gate: stopped ≤ 2 s).
-    QTimer::singleShot(2000, this, [this] {
-        for (ActiveProbe* active : m_activeProbes) {
-            QProcess* proc = active->process.get();
+    // Capture PID values, never job pointers: jobs may be finished and freed
+    // before the timer fires.
+    QList<qint64> killedPids;
+    for (ActiveJob* job : m_activeJobs) {
+        if (job->pid.load() > 0)
+            killedPids.append(job->pid.load());
+    }
+    QTimer::singleShot(2000, this, [this, killedPids] {
+        for (ActiveJob* job : m_activeJobs) {
+            const qint64 pid = job->pid.load();
+            if (pid > 0 && killedPids.contains(pid)) {
 #ifdef Q_OS_UNIX
-            ::kill(-proc->processId(), SIGKILL);
-#else
-            proc->kill();
+                ::kill(-pid, SIGKILL);
 #endif
+            }
         }
     });
 }
@@ -708,7 +937,7 @@ void Catalogue::cancelScanning()
         return;
     m_cancelRequested.store(true);
     m_pauseRequested.store(false);
-    killActiveProbes();
+    killActiveJobs();
     emitProgress(QStringLiteral("cancelled"));
 }
 
@@ -797,6 +1026,32 @@ void Catalogue::emitProgress(const QString& state)
 void Catalogue::emitRows(const QList<VideoRow>& rows)
 {
     emit rowsChanged(rows, false);
+}
+
+QString Catalogue::artifactPath(qint64 videoId, qint64 revision,
+                                const QString& profile) const
+{
+    return m_cacheDir + QStringLiteral("/%1-%2-%3.jpg").arg(videoId).arg(revision).arg(profile);
+}
+
+qint64 Catalogue::settingInt(const char* key, qint64 fallback) const
+{
+    Statement st = m_db->prepare("SELECT value FROM settings WHERE key=?");
+    st.bind(1, QString::fromLatin1(key));
+    if (!st.step())
+        return fallback;
+    bool ok = false;
+    const qint64 value = st.text(0).toLongLong(&ok);
+    return ok ? value : fallback;
+}
+
+void Catalogue::setSettingInt(const char* key, qint64 value)
+{
+    Statement st = m_db->prepare(
+        "INSERT OR REPLACE INTO settings(key, value, version) VALUES(?,?,1)");
+    st.bind(1, QString::fromLatin1(key));
+    st.bind(2, QString::number(value));
+    st.run();
 }
 
 } // namespace itub

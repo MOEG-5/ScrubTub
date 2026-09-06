@@ -8,7 +8,14 @@
 
 #include <QString>
 
+#include <atomic>
+#include <functional>
+
 namespace itub {
+
+// Registered with the process's PID at spawn (0 when done) so the catalogue
+// can kill process trees promptly on cancellation (TECH_SPEC.md §11).
+using PidSink = std::function<void(qint64)>;
 
 struct ProbeResult {
     enum class FailKind { None, BadMedia, TransientIo, Timeout };
@@ -32,7 +39,9 @@ public:
     // Runs ffprobe with a hard timeout. The source file is only read.
     // Default timeout: 30 s (configurable for slow media, TECH_SPEC.md §5).
     static ProbeResult run(const QString& ffprobePath, const QString& filePath,
-                           int timeoutMs = 30000);
+                           int timeoutMs = 30000,
+                           const PidSink& pidSink = {},
+                           const std::atomic_bool* cancelled = nullptr);
 
     // Argument list for -show_streams/-show_format JSON output; shared by the
     // blocking runner and the asynchronous catalogue job runner.

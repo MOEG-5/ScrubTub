@@ -69,9 +69,15 @@ QStringList Probe::arguments(const QString& filePath)
             filePath};
 }
 
-ProbeResult Probe::run(const QString& ffprobePath, const QString& filePath, int timeoutMs)
+ProbeResult Probe::run(const QString& ffprobePath, const QString& filePath, int timeoutMs,
+                       const PidSink& pidSink, const std::atomic_bool* cancelled)
 {
     ProbeResult result;
+    if (cancelled && cancelled->load()) {
+        result.failKind = ProbeResult::FailKind::TransientIo;
+        result.error = QStringLiteral("cancelled before start");
+        return result;
+    }
     QProcess process;
     const QStringList args = arguments(filePath);
 
@@ -80,13 +86,19 @@ ProbeResult Probe::run(const QString& ffprobePath, const QString& filePath, int 
     process.setChildProcessModifier([] { ::setsid(); });
 #endif
     process.start(ffprobePath, args);
+    if (pidSink)
+        pidSink(process.processId());
     if (!process.waitForStarted(10000)) {
+        if (pidSink)
+            pidSink(0);
         result.failKind = ProbeResult::FailKind::TransientIo;
         result.error = QStringLiteral("could not start ffprobe: %1")
                            .arg(process.errorString());
         return result;
     }
     if (!process.waitForFinished(timeoutMs)) {
+        if (pidSink)
+            pidSink(0);
 #ifdef Q_OS_UNIX
         ::kill(-process.processId(), SIGTERM);
 #else
@@ -105,6 +117,8 @@ ProbeResult Probe::run(const QString& ffprobePath, const QString& filePath, int 
         return result;
     }
 
+    if (pidSink)
+        pidSink(0);
     const QByteArray out = process.readAllStandardOutput();
     const QByteArray err = process.readAllStandardError().left(kMaxStderrBytes);
     const auto failKind =

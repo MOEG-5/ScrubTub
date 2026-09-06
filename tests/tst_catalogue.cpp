@@ -58,6 +58,7 @@ private slots:
 private:
     bool makeCorpusRoot(const QString& name, QString* error);
     void waitScanComplete(QSignalSpy& progressSpy, int timeoutMs = 120000);
+    void drainJobs();
     qint64 videoIdFor(const QString& fileName) const;
     VideoRow rowFor(const QString& fileName);
     qint64 countRows() const;
@@ -65,6 +66,7 @@ private:
 
     QTemporaryDir m_profileBase;
     QString m_ffprobe;
+    QString m_ffmpeg;
     QString m_corpusRoot;
     std::unique_ptr<Catalogue> m_cat;
     CatalogueModel m_model;
@@ -79,6 +81,8 @@ void TestCatalogue::initTestCase()
 
     m_ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
     QVERIFY2(!m_ffprobe.isEmpty(), "ffprobe must be installed for catalogue tests");
+    m_ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    QVERIFY2(!m_ffmpeg.isEmpty(), "ffmpeg must be installed for catalogue tests");
 
     QVERIFY(m_profileBase.isValid());
     QVERIFY(QDir().mkpath(m_profileBase.filePath(QStringLiteral("corpora"))));
@@ -141,6 +145,22 @@ void TestCatalogue::waitScanComplete(QSignalSpy& progressSpy, int timeoutMs)
     QTest::qWait(50);
 }
 
+// Poster/storyboard extraction continues after the scan reaches 'complete';
+// rescanRoot is rejected while jobs are active, so tests drain first.
+void TestCatalogue::drainJobs()
+{
+    for (int i = 0; i < 90; ++i) {
+        const qint64 q = countJobs(QStringLiteral("queued"));
+        const qint64 r = countJobs(QStringLiteral("running"));
+        if (q == 0 && r == 0)
+            return;
+        if (i % 4 == 0)
+            qDebug() << "drain:" << q << r;
+        QTest::qWait(500);
+    }
+    QFAIL("jobs did not drain");
+}
+
 qint64 TestCatalogue::videoIdFor(const QString& fileName) const
 {
     for (int i = 0; i < m_model.rowCount(); ++i) {
@@ -199,7 +219,7 @@ void TestCatalogue::scanFindsFilesAndProbes()
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("scan"), &error), qUtf8Printable(error));
 
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     QSignalSpy rowsSpy(m_cat.get(), &Catalogue::rowsChanged);
 
@@ -230,11 +250,12 @@ void TestCatalogue::rescanHasNoDuplicatesAndNoReprobes()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("rescan"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(m_corpusRoot);
     waitScanComplete(progressSpy);
+    drainJobs();
     const qint64 rowsBefore = countRows();
 
     // Force-refresh path exercises reconciliation of identical files too.
@@ -244,16 +265,17 @@ void TestCatalogue::rescanHasNoDuplicatesAndNoReprobes()
 
     QCOMPARE(countRows(), rowsBefore);
     QCOMPARE(rowFor(QStringLiteral("video_a.mp4")).probeStatus, QStringLiteral("ok"));
-    // Unchanged rescan leaves no queued jobs behind (§11 gate).
-    QCOMPARE(countJobs(QStringLiteral("queued")), 0);
-    QCOMPARE(countJobs(QStringLiteral("running")), 0);
+    // Unchanged rescan leaves no work behind: no probes for unchanged
+    // revisions, and poster/storyboard jobs drain (§11 gate).
+    QTRY_COMPARE_WITH_TIMEOUT(countJobs(QStringLiteral("queued")), 0, 120000);
+    QTRY_COMPARE_WITH_TIMEOUT(countJobs(QStringLiteral("running")), 0, 120000);
 }
 
 void TestCatalogue::annotationsSurviveRescan()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("annotations"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(m_corpusRoot);
@@ -265,6 +287,7 @@ void TestCatalogue::annotationsSurviveRescan()
     m_cat->incrementViews(id);
     m_cat->incrementViews(id);
 
+    drainJobs();
     progressSpy.clear();
     m_cat->rescanRoot(1, true);
     waitScanComplete(progressSpy);
@@ -278,7 +301,7 @@ void TestCatalogue::contentChangeBumpsRevisionAndPreservesAnnotations()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("change"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(m_corpusRoot);
@@ -296,6 +319,7 @@ void TestCatalogue::contentChangeBumpsRevisionAndPreservesAnnotations()
     file.write(QByteArray(1024, 'x'));
     file.close();
 
+    drainJobs();
     progressSpy.clear();
     m_cat->rescanRoot(1, true);
     waitScanComplete(progressSpy);
@@ -312,7 +336,7 @@ void TestCatalogue::missingAfterRemoval()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("missing"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(m_corpusRoot);
@@ -325,6 +349,7 @@ void TestCatalogue::missingAfterRemoval()
     // The removed file is a tracked test artifact, not an unknown file.
     QVERIFY(QFile::remove(m_corpusRoot + QStringLiteral("/Travel/Japan/travel.mp4")));
 
+    drainJobs();
     progressSpy.clear();
     m_cat->rescanRoot(1, false);
     waitScanComplete(progressSpy);
@@ -343,7 +368,7 @@ void TestCatalogue::offlineRootKeepsAvailability()
     testsupport::FixtureCorpus corpus(rootDir);
     QVERIFY2(corpus.addCopyOfMedia(fixturePath(), QStringLiteral("video_a.mp4"), &error),
              qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(rootDir);
@@ -370,7 +395,7 @@ void TestCatalogue::symlinkRootRejected()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("symlinkroot"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     const QString link = m_profileBase.filePath(QStringLiteral("corpora/root-link"));
     QFile::remove(link);
@@ -387,7 +412,7 @@ void TestCatalogue::overlappingRootRejected()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("overlap"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(m_corpusRoot);
@@ -406,11 +431,11 @@ void TestCatalogue::profileLockExcludesSecondInstance()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("lock"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     auto second = std::make_unique<Catalogue>();
     QString secondError;
-    QVERIFY2(!second->initialize(m_currentProfile, m_ffprobe, &secondError),
+    QVERIFY2(!second->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &secondError),
              "Second instance must be refused while the profile is locked");
     QVERIFY(secondError.contains(QStringLiteral("in use")));
 }
@@ -429,7 +454,7 @@ void TestCatalogue::corruptedFileBecomesErrorState()
     trunc.write(head);
     trunc.close();
 
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     QSignalSpy progressSpy(m_cat.get(), &Catalogue::scanProgress);
     m_cat->addRoot(m_corpusRoot);
@@ -446,7 +471,7 @@ void TestCatalogue::newerSchemaIsRejected()
 {
     QString error;
     QVERIFY2(makeCorpusRoot(QStringLiteral("newschema"), &error), qUtf8Printable(error));
-    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, &error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
 
     // Simulate a database written by a future version.
     m_cat.reset();
@@ -457,7 +482,7 @@ void TestCatalogue::newerSchemaIsRejected()
     }
     auto reopened = std::make_unique<Catalogue>();
     QString reopenError;
-    QVERIFY2(!reopened->initialize(m_currentProfile, m_ffprobe, &reopenError),
+    QVERIFY2(!reopened->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &reopenError),
              "A newer schema must be refused, not silently opened");
     QVERIFY(reopenError.contains(QStringLiteral("newer")));
     m_cat = std::move(reopened);

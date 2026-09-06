@@ -80,16 +80,17 @@ int main(int argc, char* argv[])
     // ffprobe from PATH or the bundled directory; a missing tool surfaces as a
     // visible error on scan, not a silent failure.
     const QString ffprobePath = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
-    if (ffprobePath.isEmpty())
-        qWarning("ffprobe not found on PATH: metadata extraction will fail until "
-                 "a bundled copy is available");
+    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (ffprobePath.isEmpty() || ffmpegPath.isEmpty())
+        qWarning("ffprobe/ffmpeg not found on PATH: metadata extraction will fail "
+                 "until a bundled copy is available");
 
     QString initError;
     bool initialized = false;
     QMetaObject::invokeMethod(
         catalogue,
         [&] { initialized = catalogue->initialize(itub::ProfilePaths::profileDataDir(),
-                                                  ffprobePath, &initError); },
+                                                  ffprobePath, ffmpegPath, &initError); },
         Qt::BlockingQueuedConnection);
     if (!initialized) {
         qCritical("Catalogue unavailable: %s", qUtf8Printable(initError));

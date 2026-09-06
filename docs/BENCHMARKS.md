@@ -74,6 +74,37 @@ with a real RHI/window path, cold-cache first hover, other media classes
 (HEVC/VP9/AV1, 4K, VFR), Windows behavior, and network storage. These belong
 to the owner-run gates in TECH_SPEC.md section 11.
 
+## Milestone follow-up — mpv hover backend (2026-09-06)
+
+After the milestone-0 verdict (QMediaPlayer paused seeks accurate but slow),
+the owner pointed at the thumbfast technique (po5/thumbfast, MPL-2.0 — studied
+for its approach, not copied). itub now ships an mpv-backed hover session:
+one persistent `mpv --no-config --idle --pause` subprocess per engaged card,
+driven over its JSON IPC socket, writing the paused frame as raw BGRA to an
+app-owned file that the session polls. Measured on the same reference machine
+and fixture:
+
+| Path | Latency (pointer settle → frame) |
+| --- | --- |
+| mpv exact seek + frame file update | **~185–260 ms** |
+| QMediaPlayer exact seek (previous backend) | 250–360 ms (p95 358–377 ms) |
+| Cached storyboard tile (default during motion) | ~0 ms (no source reads) |
+
+Findings recorded along the way:
+
+- mpv IPC is line-delimited JSON; omitting the trailing newline silently
+  buffers commands forever (cost most of a debugging session).
+- With the paused encoder (`--o=`), **keyframe-accurate seeks
+  (`absolute+keyframes`) do not repaint**; exact seeks do. The session
+  therefore seeks only on pointer settle (220 ms coalescing) and the cached
+  storyboard carries the pointer-in-motion feedback — matching the spec's
+  cached-fallback design exactly.
+- `QMediaPlayer::duration()` reports the fixture's subtitle duration
+  (669 360 ms); the hover session clamps to the ffprobe video-stream
+  duration (667 500 ms) stored in the catalogue.
+
+mpv is optional: without it the QMediaPlayer backend is used automatically.
+
 ## Owner-run large-library benchmark instructions
 
 The synthetic 10k/100k generator is **not yet implemented** (the agent corpus

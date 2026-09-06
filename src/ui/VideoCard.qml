@@ -27,6 +27,7 @@ Item {
     required property real views
     required property string availability
     required property string probeStatus
+    required property string probeError
     required property int revision
     required property string posterSource
     required property string atlasSource
@@ -39,6 +40,11 @@ Item {
     property int hoverTileIndex: 0
 
     // Poster/atlas URLs come directly from the model (immutable per revision).
+
+    function formatTime(ms) {
+        const s = Math.floor(ms / 1000)
+        return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
+    }
 
     onHoverActiveChanged: {
         if (hoverActive) {
@@ -188,10 +194,6 @@ Item {
                     font.pixelSize: 11
                 }
 
-                function formatTime(ms) {
-                    const s = Math.floor(ms / 1000)
-                    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
-                }
             }
         }
 
@@ -223,30 +225,6 @@ Item {
             font.pixelSize: 11
         }
 
-        // Accessible star controls; a click must not trigger playback (§10).
-        Row {
-            anchors.bottom: parent.bottom
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 0
-            visible: card.hoverActive
-            Repeater {
-                model: 5
-                AbstractButton {
-                    required property int modelData
-                    width: 20
-                    height: 20
-                    Accessible.name: qsTr("Rate %1 of 5 stars").arg(modelData + 1)
-                    contentItem: Text {
-                        text: modelData < card.rating ? "★" : "☆"
-                        color: "#ffd166"
-                        font.pixelSize: 14
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: catalogue.setRating(videoId, modelData + 1)
-                }
-            }
-        }
     }
 
     // Pointer mapping (§6): u = clamp((x-left)/width, 0, 1), request u·D.
@@ -287,6 +265,42 @@ Item {
         onExited: {
             hoverSession.disengage()
             liveFrameVisible = false
+        }
+    }
+
+    // Accessible star controls; a click must not trigger playback (§10).
+    // Declared after the card's MouseArea so the buttons receive the clicks;
+    // anchored inside the card with a chip background for visibility.
+    Rectangle {
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 8
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: starRow.implicitWidth + 8
+        height: 22
+        radius: 11
+        color: "#cc141418"
+        visible: card.hoverActive
+        Row {
+            id: starRow
+            anchors.centerIn: parent
+            spacing: 0
+        Repeater {
+            model: 5
+            AbstractButton {
+                required property int modelData
+                width: 20
+                height: 20
+                Accessible.name: qsTr("Rate %1 of 5 stars").arg(modelData + 1)
+                contentItem: Text {
+                    text: modelData < card.rating ? "★" : "☆"
+                    color: "#ffd166"
+                    font.pixelSize: 14
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: catalogue.setRating(videoId, modelData + 1)
+            }
+        }
         }
     }
 

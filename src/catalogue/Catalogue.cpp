@@ -118,9 +118,18 @@ bool Catalogue::initialize(const QString& profileDataDir, const QString& ffprobe
 
     // Interrupted jobs return to queued on startup (§5).
     m_db->exec("UPDATE jobs SET state='queued' WHERE state='running'");
+    // Startup sweep: drop artifact files whose entries are gone (§6).
+    purgeOrphanedCacheFiles();
     if (error)
         *error = QString();
     return true;
+}
+
+void Catalogue::rescanAllRoots(bool force)
+{
+    Statement st = m_db->prepare("SELECT id FROM roots ORDER BY id");
+    while (st.step())
+        startScan(st.int64(0), force);
 }
 
 void Catalogue::loadExistingState()

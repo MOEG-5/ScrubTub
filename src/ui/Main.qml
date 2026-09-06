@@ -125,6 +125,15 @@ ApplicationWindow {
                     ToolTip.delay: 400
                     ToolTip.text: qsTr("When checked, hovering uses only cached storyboard frames and never reads the original file.")
                 }
+                CheckBox {
+                    id: startupRefreshCheck
+                    text: qsTr("Check folders on startup")
+                    checked: true
+                    onToggled: saveSettings()
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 400
+                    ToolTip.text: qsTr("Re-check all folders when the app starts: moved, added, and deleted videos are reconciled, and cached previews of vanished videos are cleaned up.")
+                }
             }
         }
 
@@ -532,6 +541,7 @@ ApplicationWindow {
             grid.cardSize = settings.cardSize
             sortState.sortDescending = settings.sortDescending
             hoverSession.enabled = !settings.cachedOnly
+            startupRefreshCheck.checked = settings.startupRefresh
             if (settings.sortKey !== "") {
                 const keys = ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"]
                 const idx = keys.indexOf(settings.sortKey)
@@ -545,7 +555,8 @@ ApplicationWindow {
             cardSize: grid.cardSize,
             sortKey: ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"][sortCombo.currentIndex],
             sortDescending: sortState.sortDescending,
-            cachedOnly: !hoverSession.enabled
+            cachedOnly: !hoverSession.enabled,
+            startupRefresh: startupRefreshCheck.checked
         })
     }
     Connections {

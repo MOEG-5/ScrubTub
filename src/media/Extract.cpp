@@ -286,12 +286,15 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     painter.end();
 
     // Validated atlas: temp file, then atomic rename into the cache (§5).
+    // A stale artifact at the destination makes QFile::rename fail — remove
+    // it first (the cache row for this revision is being replaced anyway).
     const QString atlasTemp = request.outputPath + QStringLiteral(".tmp.jpg");
     if (!atlas.save(atlasTemp, "jpg", 85)) {
         result.error = QStringLiteral("could not write storyboard atlas");
         QFile::remove(atlasTemp);
         return result;
     }
+    QFile::remove(request.outputPath);
     if (!QFile::rename(atlasTemp, request.outputPath)) {
         QFile::remove(atlasTemp);
         result.error = QStringLiteral("could not move the atlas into the cache");

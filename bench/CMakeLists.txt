@@ -2,10 +2,10 @@ qt_add_executable(hoverbench
     hoverbench.cpp
 )
 
-qt_add_executable(repro_user
-    repro_user.cpp
-)
-target_link_libraries(repro_user PRIVATE itub_core itub_defaults)
+qt_add_executable(framecheck /tmp/framecheck.cpp)
+target_link_libraries(framecheck PRIVATE itub_core Qt6::Multimedia itub_defaults)
+target_compile_definitions(framecheck PRIVATE
+    ITUB_DEBUG_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../testvideo1.mp4")
 
 
 target_link_libraries(hoverbench PRIVATE

@@ -60,10 +60,19 @@ Qt 6.11.1 (FFmpeg backend), FFmpeg n9.0.1. Details in
   (video stream), and `QMediaPlayer::duration()` was confirmed to report
   the subtitle value (669 360 ms) — the hover session clamps to the stored
   video-stream duration instead.
+- **Hover scrubbing:** the default hover backend is a persistent mpv
+  subprocess (owner's thumbfast reference): exact-on-settle seeks at
+  ~185–260 ms with instant cached tiles during motion; QMediaPlayer fallback
+  when mpv is absent. Cache hygiene: orphaned artifacts are swept at
+  startup, previews of vanished videos are purged at scan completion, root
+  removal removes their artifacts, and an optional "Check folders on
+  startup" refresh (default on) reconciles moves/additions/deletions.
 - **Storyboard extraction:** single ffmpeg process per sample with `-copyts`;
   actual delivered timestamps recorded in `cache_entries.sample_times`.
   Per-sample cost matches the §11 preliminary measurement (~230–520 ms);
   a 24-frame storyboard lands near the 10 s budget on this SSD machine.
+  (Candidate follow-up: drive storyboard extraction through the same
+  persistent-mpv mechanism as the hover session.)
 - **Full agent suite:** 8/8 ctest suites green, repeated runs stable.
 
 ## Remaining release blockers (owner validation pending)

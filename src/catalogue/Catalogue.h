@@ -121,6 +121,10 @@ public slots:
     // Called after UI connections are in place so nothing is lost.
     void loadExistingState();
 
+    // Optional startup refresh (§10): re-check every root so moved, added,
+    // and removed videos are reconciled without a manual rescan.
+    void rescanAllRoots(bool force = false);
+
     // Hover plumbing: resolve the source for the paused-player session on the
     // catalogue thread; results are delivered queued to the UI.
     void hoverEngage(qint64 videoId);
@@ -217,6 +221,8 @@ private:
 public:
     void saveUiSettingsMap(const QVariantMap& settings);
     void restoreSettings();
+    void purgeOrphanedCacheFiles();
+    void purgeCacheForVideos(const QList<qint64>& videoIds);
 
 private:
     void refreshSearchRecord(qint64 videoId);

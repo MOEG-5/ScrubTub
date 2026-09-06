@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QUrl>
 
 #ifdef Q_OS_UNIX
@@ -26,6 +27,7 @@ const char* kSettingCardSize = "ui_card_size";
 const char* kSettingSortKey = "ui_sort_key";
 const char* kSettingSortDesc = "ui_sort_desc";
 const char* kSettingCachedOnly = "ui_cached_only";
+const char* kSettingStartupRefresh = "ui_startup_refresh";
 const char* kSettingDiskCacheBytes = "disk_cache_bytes";
 } // namespace
 
@@ -203,6 +205,63 @@ void Catalogue::importBackup(const QString& srcPathIn)
 
 // --------------------------- cache controls (§6) ----------------------------
 
+// Removes cached artifact files that no longer correspond to a cache entry
+// (root removals, missing-video purges, interrupted extractions). Only files
+// inside the app-owned thumbs directory are ever deleted (§3, §6).
+void Catalogue::purgeOrphanedCacheFiles()
+{
+    QDir cacheDir(m_cacheDir);
+    if (!cacheDir.exists())
+        return;
+    QSet<QString> tracked;
+    {
+        Statement st = m_db->prepare("SELECT rel_path FROM cache_entries");
+        while (st.step())
+            tracked.insert(st.text(0));
+    }
+    const QStringList entries =
+        cacheDir.entryList(QDir::Files | QDir::NoDotAndDotDot);
+    for (const QString& name : entries) {
+        if (!tracked.contains(name)) {
+            // Owned artifacts match the "<video>-<revision>-<profile>.jpg"
+            // pattern; anything else in this directory is not ours to touch.
+            if (name.endsWith(QLatin1String(".jpg"))
+                && QRegularExpression(QStringLiteral("^\d+-\d+-[a-z0-9-]+\.jpg$"))
+                       .match(name)
+                       .hasMatch())
+                QFile::remove(m_cacheDir + QLatin1Char('/') + name);
+        }
+    }
+    const QStringList tempDirs =
+        cacheDir.entryList(QStringList{QStringLiteral("tmp-*")}, QDir::Dirs);
+    for (const QString& dir : tempDirs)
+        QDir(m_cacheDir + QLatin1Char('/') + dir).removeRecursively();
+}
+
+// Drops cache entries and their files for videos that no longer resolve
+// (missing after a complete enumeration, or removed roots).
+void Catalogue::purgeCacheForVideos(const QList<qint64>& videoIds)
+{
+    if (videoIds.isEmpty())
+        return;
+    QStringList relPaths;
+    m_db->transaction([this, videoIds, &relPaths] {
+        for (const qint64 id : videoIds) {
+            Statement sel = m_db->prepare(
+                "SELECT rel_path FROM cache_entries WHERE video_id=?");
+            sel.bind(1, id);
+            while (sel.step())
+                relPaths.append(sel.text(0));
+            Statement del = m_db->prepare("DELETE FROM cache_entries WHERE video_id=?");
+            del.bind(1, id);
+            del.run();
+        }
+        return true;
+    });
+    for (const QString& rel : relPaths)
+        QFile::remove(m_cacheDir + QLatin1Char('/') + rel);
+}
+
 void Catalogue::clearPreviews()
 {
     // Remove only owned artifacts: rows first (paths), then the files, then
@@ -247,6 +306,8 @@ void Catalogue::restoreSettings()
                     settingInt(kSettingSortDesc, 0) != 0);
     settings.insert(QStringLiteral("cachedOnly"),
                     settingInt(kSettingCachedOnly, 0) != 0);
+    settings.insert(QStringLiteral("startupRefresh"),
+                    settingInt(kSettingStartupRefresh, 1) != 0);
     emit settingsReady(settings);
 }
 
@@ -282,6 +343,9 @@ void Catalogue::saveUiSettingsMap(const QVariantMap& settings)
     if (settings.contains(QStringLiteral("cachedOnly")))
         setSettingInt(kSettingCachedOnly,
                       settings.value(QStringLiteral("cachedOnly")).toBool() ? 1 : 0);
+    if (settings.contains(QStringLiteral("startupRefresh")))
+        setSettingInt(kSettingStartupRefresh,
+                      settings.value(QStringLiteral("startupRefresh")).toBool() ? 1 : 0);
     if (settings.contains(QStringLiteral("diskCacheBytes")))
         setSettingInt(kSettingDiskCacheBytes,
                       settings.value(QStringLiteral("diskCacheBytes")).toLongLong());

@@ -59,7 +59,9 @@ void HoverSession::engage(qint64 videoId, qint64 revision, const QString& absolu
                           qint64 durationMs)
 {
     if (!m_enabled || absolutePath.isEmpty()) {
-        emit statusChanged(QStringLiteral("unavailable"));
+        // Cached-only mode (or no available source): cached feedback carries
+        // on; the session never loads the original file (§6).
+        setStatus(QStringLiteral("unavailable"));
         return;
     }
     disengage(); // invalidate old frames before switching source (§6)

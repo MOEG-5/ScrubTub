@@ -132,6 +132,17 @@ ApplicationWindow {
                     height: grid.cellHeight
                 }
 
+                // Keyboard activation (§1): Enter opens the selected video
+                // in the system default player; arrows navigate the grid.
+                Keys.onReturnPressed: {
+                    if (currentItem)
+                        catalogue.openInDefaultPlayer(currentItem.videoId)
+                }
+                Keys.onEnterPressed: {
+                    if (currentItem)
+                        catalogue.openInDefaultPlayer(currentItem.videoId)
+                }
+
                 ScrollBar.vertical: ScrollBar { }
 
                 Label {

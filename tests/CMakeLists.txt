@@ -72,8 +72,28 @@ add_test(NAME preview
     COMMAND tst_preview
 )
 
-set_target_properties(tst_filesafety tst_probe tst_catalogue tst_extract tst_preview PROPERTIES
+add_executable(tst_hoversession
+    tst_hoversession.cpp
+)
+target_link_libraries(tst_hoversession PRIVATE
+    itub_testsupport itub_core Qt6::Multimedia Qt6::Test itub_defaults
+)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../testvideo1.mp4")
+    target_compile_definitions(tst_hoversession PRIVATE
+        ITUB_DEFAULT_SOURCE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../testvideo1.mp4")
+endif()
+add_test(NAME hoversession
+    COMMAND tst_hoversession
+)
+
+set_target_properties(tst_filesafety tst_probe tst_catalogue tst_extract tst_preview tst_hoversession PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
 
+
+# Headless platforms for every Qt-based test; GUI tests use their own
+# disposable displays per AGENTS.md.
+set_tests_properties(filesafety probe catalogue extract preview hoversession PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

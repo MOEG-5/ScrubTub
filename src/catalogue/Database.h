@@ -64,7 +64,7 @@ public:
     // schemas. Returns false with reason (including "newer schema").
     bool migrate(QString* error);
 
-    static constexpr int kSchemaVersion = 1;
+    static constexpr int kSchemaVersion = 2;
 
 private:
     sqlite3* m_db = nullptr;

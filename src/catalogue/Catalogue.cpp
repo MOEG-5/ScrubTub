@@ -375,8 +375,16 @@ void Catalogue::runEnumerationLocked(qint64 rootId, bool force)
                         seen.run();
                         if (probeStatus != QLatin1String("ok")
                             && availability != QLatin1String("missing")) {
-                            // Present again after a probe failure: retry once
-                            // through a fresh queued job.
+                            // Present but never probed (or failed): ensure a
+                            // queued probe job exists. INSERT covers rows whose
+                            // jobs were lost (e.g. the pre-migration stall);
+                            // the UPDATE revives error/queued entries.
+                            Statement insert = m_db->prepare(
+                                "INSERT OR IGNORE INTO jobs(video_id, revision, kind, "
+                                "state) VALUES(?,?,'probe','queued')");
+                            insert.bind(1, id);
+                            insert.bind(2, revision);
+                            insert.run();
                             Statement requeue = m_db->prepare(
                                 "UPDATE jobs SET state='queued', retries=0, error=NULL "
                                 "WHERE video_id=? AND kind='probe' AND revision=?");

@@ -10,18 +10,13 @@ namespace itub {
 
 namespace {
 
-// Schema v1. Constraints reject negative sizes/durations/views and zero or
-// negative known dimensions (TECH_SPEC.md section 4).
+// Historical v1 schema (without stream_index/settings), kept for the
+// migration tests. Constraints reject negative sizes/durations/views and
+// zero or negative known dimensions (TECH_SPEC.md section 4).
 const char* kSchemaV1 = R"SQL(
 CREATE TABLE IF NOT EXISTS meta(
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
-);
-
-CREATE TABLE settings(
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    version INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE roots(
@@ -50,7 +45,6 @@ CREATE TABLE videos(
     display_width INTEGER CHECK(display_width IS NULL OR display_width > 0),
     display_height INTEGER CHECK(display_height IS NULL OR display_height > 0),
     rotation_deg INTEGER CHECK(rotation_deg IS NULL OR rotation_deg IN (0,90,180,270)),
-    stream_index INTEGER,
     codec TEXT,
     rating INTEGER CHECK(rating IS NULL OR (rating BETWEEN 1 AND 5)),
     views INTEGER NOT NULL DEFAULT 0 CHECK(views >= 0),
@@ -115,6 +109,18 @@ CREATE TABLE cache_entries(
 );
 
 CREATE INDEX IF NOT EXISTS idx_cache_access ON cache_entries(last_access_ms);
+)SQL";
+
+// Schema v2 = v1 plus the selected-stream index and the settings table.
+// Both were added after v1 shipped; the migration below applies them
+// idempotently to databases that were created before they existed.
+const char* kSchemaV2 = R"SQL(
+ALTER TABLE videos ADD COLUMN stream_index INTEGER;
+CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1
+);
 )SQL";
 
 } // namespace
@@ -339,12 +345,9 @@ bool Database::migrate(QString* error)
         return false;
     }
 
-    // Fresh database: create the current schema and stamp the version. An
-    // existing database at the supported version is left untouched; older
-    // versions run stepwise migrations (transactionally, after a verified
-    // backup — backup tooling arrives in milestone 4).
+    // Fresh database: create the current schema and stamp the version.
     if (!version.has_value()) {
-        if (!exec(kSchemaV1)) {
+        if (!exec(kSchemaV1) || !exec(kSchemaV2)) {
             if (error)
                 *error = lastError();
             return false;
@@ -360,6 +363,34 @@ bool Database::migrate(QString* error)
         if (error)
             *error = stamped ? QString() : lastError();
         return stamped;
+    }
+
+    // Stepwise migrations. v1 → v2: the selected-stream index and the
+    // settings table. ALTER is guarded by a column check because databases
+    // created while these were part of the unversioned schema already carry
+    // them (idempotent, §4). Each step runs inside a transaction.
+    if (version.value() == 1) {
+        bool hasStreamIndex = false;
+        {
+            Statement cols = prepare(
+                "SELECT name FROM pragma_table_info('videos') WHERE name='stream_index'");
+            hasStreamIndex = cols.step();
+        }
+        const bool ok = transaction([this, hasStreamIndex]() -> bool {
+            if (!hasStreamIndex && !exec(
+                "ALTER TABLE videos ADD COLUMN stream_index INTEGER"))
+                return false;
+            if (!exec("CREATE TABLE IF NOT EXISTS settings("
+                      "key TEXT PRIMARY KEY, value TEXT NOT NULL, "
+                      "version INTEGER NOT NULL DEFAULT 1)"))
+                return false;
+            Statement stamp = prepare(
+                "UPDATE meta SET value='2' WHERE key='schema_version'");
+            return stamp.isValid() && stamp.run();
+        });
+        if (error)
+            *error = ok ? QString() : lastError();
+        return ok;
     }
 
     if (error)

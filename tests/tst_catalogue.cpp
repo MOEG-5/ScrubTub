@@ -54,6 +54,8 @@ private slots:
     void profileLockExcludesSecondInstance();
     void corruptedFileBecomesErrorState();
     void newerSchemaIsRejected();
+    void v1DatabaseMigratesToCurrentSchema();
+    void pendingRowsWithoutJobsGetReprobed();
 
 private:
     bool makeCorpusRoot(const QString& name, QString* error);
@@ -487,6 +489,104 @@ void TestCatalogue::newerSchemaIsRejected()
     QVERIFY(reopenError.contains(QStringLiteral("newer")));
     m_cat = std::move(reopened);
     m_cat.reset(); // cleanup() handles teardown; avoid double-managed pointer
+}
+
+// A database created before the stream_index column and settings table
+// existed (stamped v1) must migrate on open — the user-reported stall:
+// every probe dispatch failed with "no such column: stream_index".
+void TestCatalogue::v1DatabaseMigratesToCurrentSchema()
+{
+    QString error;
+    QVERIFY2(makeCorpusRoot(QStringLiteral("migration"), &error), qUtf8Printable(error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
+
+    // Downgrade the just-created database to a genuine v1 layout.
+    m_cat.reset();
+    {
+        Database raw;
+        QVERIFY(raw.open(m_currentProfile + QStringLiteral("/catalogue.db"), &error));
+        QVERIFY(raw.exec("DROP TABLE settings"));
+        QVERIFY(raw.exec("ALTER TABLE videos DROP COLUMN stream_index"));
+        QVERIFY(raw.exec("UPDATE meta SET value='1' WHERE key='schema_version'"));
+    }
+
+    // Reopening must migrate v1 → v2 transparently.
+    auto reopened = std::make_unique<Catalogue>();
+    QVERIFY2(reopened->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error),
+             qUtf8Printable(error));
+    m_cat = std::move(reopened);
+
+    {
+        Database raw;
+        QVERIFY(raw.open(m_currentProfile + QStringLiteral("/catalogue.db"), &error));
+        const auto version = raw.scalarInt(
+            "SELECT value FROM meta WHERE key='schema_version'");
+        QVERIFY(version.has_value());
+        QCOMPARE(version.value(), 2);
+        QVERIFY(raw.scalarInt("SELECT COUNT(*) FROM pragma_table_info('videos') "
+                              "WHERE name='stream_index'").value_or(0) == 1);
+    }
+
+    // And the migrated database fully works: scan + probe to completion.
+    QSignalSpy progress(m_cat.get(), &Catalogue::scanProgress);
+    m_cat->addRoot(m_corpusRoot);
+    const bool done = QTest::qWaitFor([&] {
+        for (int i = progress.size() - 1; i >= 0; --i)
+            if (progress.at(i).at(0).value<ScanProgress>().state == QLatin1String("complete"))
+                return true;
+        return false;
+    }, 180000);
+    QVERIFY2(done, "scan did not complete after migration");
+    drainJobs();
+    QTRY_COMPARE_WITH_TIMEOUT(countJobs(QStringLiteral("queued")), 0, 60000);
+    QTRY_COMPARE_WITH_TIMEOUT(countJobs(QStringLiteral("running")), 0, 60000);
+}
+
+// Recovery for the user-reported state: rows left 'pending' with no job
+// rows at all (dispatch failures deleted them) must be re-probed by a
+// normal rescan, without needing force refresh.
+void TestCatalogue::pendingRowsWithoutJobsGetReprobed()
+{
+    QString error;
+    QVERIFY2(makeCorpusRoot(QStringLiteral("orphanjobs"), &error), qUtf8Printable(error));
+    QVERIFY(m_cat->initialize(m_currentProfile, m_ffprobe, m_ffmpeg, &error));
+
+    QSignalSpy progress(m_cat.get(), &Catalogue::scanProgress);
+    m_cat->addRoot(m_corpusRoot);
+    QVERIFY(QTest::qWaitFor([&] {
+        for (int i = progress.size() - 1; i >= 0; --i)
+            if (progress.at(i).at(0).value<ScanProgress>().state == QLatin1String("complete"))
+                return true;
+        return false;
+    }, 180000));
+    drainJobs();
+
+    // Simulate the pre-migration stall: all jobs gone, rows back to pending.
+    {
+        Database raw;
+        QVERIFY(raw.open(m_currentProfile + QStringLiteral("/catalogue.db"), &error));
+        QVERIFY(raw.exec("DELETE FROM jobs"));
+        QVERIFY(raw.exec("UPDATE videos SET probe_status='pending', availability='unprobed', "
+                         "duration_ms=NULL, codec=NULL, display_width=NULL, display_height=NULL"));
+    }
+    m_model.applyRows(QList<VideoRow>{}, true);
+    m_cat->refreshRows();
+    QTest::qWait(100);
+
+    progress.clear();
+    m_cat->rescanRoot(1, false);
+    QVERIFY(QTest::qWaitFor([&] {
+        for (int i = progress.size() - 1; i >= 0; --i)
+            if (progress.at(i).at(0).value<ScanProgress>().state == QLatin1String("complete"))
+                return true;
+        return false;
+    }, 180000));
+    drainJobs();
+
+    const VideoRow row = rowFor(QStringLiteral("video_a.mp4"));
+    QCOMPARE(row.probeStatus, QStringLiteral("ok"));
+    QCOMPARE(row.availability, QStringLiteral("available"));
+    QVERIFY(row.durationMs > 0);
 }
 
 QTEST_GUILESS_MAIN(TestCatalogue)

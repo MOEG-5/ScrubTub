@@ -76,16 +76,23 @@ to the owner-run gates in TECH_SPEC.md section 11.
 
 ## Owner-run large-library benchmark instructions
 
-Prepared commands (do **not** run in agent tools; see TECH_SPEC.md sections
-11 and 12 for the full protocol):
+The synthetic 10k/100k generator is **not yet implemented** (the agent corpus
+limit forbids running it, and implementation time went to the feature set).
+Owner validation options today:
 
-- Synthetic catalogue: `itub-bench synth --entries 10000 --queries 100`
-  *(arrives with the catalogue implementation in milestone 1+; the tool is
-  agent-built but owner-executed against private or synthetic large sets)*
-- Real-library validation: choose a root and profile explicitly, export only
-  aggregate metrics (counts, p50/p95/p99, memory). No filenames, tags, or
-  paths in shared results.
+1. **Point the app at a large real library** on a separate profile and
+   measure: cold/warm startup, search input-to-settled (p50/p95/p99 over a
+   personal query set), scrolling frame times (e.g. `QSG_RENDER_TIMING=1`),
+   steady RSS, cancel-scan acknowledgment, unchanged-rescan ffprobe count.
+   Export only aggregate metrics; never share filenames/tags/paths.
+2. **Synthetic generator (to implement):** a small CLI that fills a second
+   catalogue with fictional rows (varied Unicode names, tag distributions,
+   durations) and replays ≥100 queries spanning short/common/typo cases per
+   §11. Suggested location `bench/synth.cpp`, wired into the existing
+   `QuerySpec` path. The 10k design target and the `ponytail:` marker in
+   `CatalogueM3.cpp` (worker-side O(N) scan) are the agreed evaluation point.
 
-Startup/search/scrolling sequences, cold/warm definitions, and the 60-second
-scrolling trace protocol are defined in TECH_SPEC.md section 11 and recorded
-in BENCHMARKS.md as they are implemented.
+Definition of cold vs warm for owner runs: cold = fresh process with the
+thumbnail cache present but OS page cache dropped for the media volume
+(no cache flushes on the active profile); warm = second run without drops.
+Record CPU/storage/GPU/OS/toolchain and power mode with every table.

@@ -66,9 +66,9 @@ public:
     // Sets the display order (search result or browse order). Details for
     // IDs not yet loaded are requested through the fetch callback in pages
     // of 200 (§8); delegates for missing rows show placeholders.
-    void setOrder(const QList<qint64>& ids, bool isSearchResult);
+    Q_INVOKABLE void setOrder(const QList<qint64>& ids, bool isSearchResult);
     void setFetchCallback(FetchCallback callback);
-    void setPageSize(int n) { m_pageSize = n; }
+    Q_INVOKABLE void setPageSize(int n) { m_pageSize = n; }
     qint64 generation() const { return m_generation; }
 
 public slots:

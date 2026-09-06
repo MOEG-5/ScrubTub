@@ -199,6 +199,10 @@ QString Catalogue::whereForFilters(const QuerySpec& spec, QStringList* wheres) c
 
 void Catalogue::search(const QuerySpec& spec)
 {
+    // ponytail: this worker-side scan over pre-normalized records is O(N)
+    // per query by design at the 10k catalogue target (§8). If the owner-run
+    // benchmark misses the search gates, add a token/vocabulary index and
+    // measure again; do not cap candidates or reduce typo tolerance instead.
     const quint64 generation = ++m_searchGeneration;
 
     // Visible query validation, never silent truncation (§8).

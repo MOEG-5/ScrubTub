@@ -2,6 +2,7 @@
 // Copyright (C) 2026 the itub authors.
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 ApplicationWindow {
@@ -9,8 +10,16 @@ ApplicationWindow {
     width: 1280
     height: 800
     visible: true
-    title: qsTr("itub — Video Catalogue (milestone 0)")
+    title: qsTr("itub — Video Catalogue (milestone 1)")
     color: "#141418"
+
+    function statusText() {
+        if (catalogueModel.scanState === "idle")
+            return qsTr("Idle")
+        return catalogueModel.scanState + qsTr(" — discovered %1 · probed %2 · errors %3")
+            .arg(catalogueModel.discovered).arg(catalogueModel.probed)
+            .arg(catalogueModel.errors)
+    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -20,120 +29,202 @@ ApplicationWindow {
             Layout.fillWidth: true
             RowLayout {
                 anchors.fill: parent
-                spacing: 12
-                Label {
-                    text: qsTr("itub")
-                    font.bold: true
-                    font.pixelSize: 16
+                spacing: 8
+
+                Button {
+                    text: qsTr("Add folder")
+                    onClicked: folderDialog.open()
                 }
-                Label {
-                    text: qsTr("%1 placeholder cards").arg(gridModel.count)
-                    color: "#9a9aa6"
+                Button {
+                    text: qsTr("Pause")
+                    onClicked: catalogue.pauseScanning()
+                }
+                Button {
+                    text: qsTr("Resume")
+                    onClicked: catalogue.resumeScanning()
+                }
+                Button {
+                    text: qsTr("Cancel")
+                    onClicked: catalogue.cancelScanning()
                 }
                 Item { Layout.fillWidth: true }
-                Label { text: qsTr("Card size") }
-                Slider {
-                    id: sizeSlider
-                    from: 120
-                    to: 280
-                    value: gridModel.cellSize
-                    stepSize: 4
-                    onValueChanged: gridModel.cellSize = value
+                Label {
+                    text: window.statusText()
+                    color: "#c9c9d4"
                 }
             }
         }
 
-        GridView {
-            id: grid
+        // Roots strip
+        ScrollView {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            model: gridModel
-            reuseItems: true
-            cacheBuffer: 400
-            clip: true
-            pixelAligned: true
-            cellWidth: gridModel.cellSize
-            cellHeight: Math.round(gridModel.cellSize * 0.5625) + 44
-
-            delegate: Item {
-                required property string name
-                required property string duration
-                required property string size
-                required property string dimensions
-                required property int hue
-                required property int index
-
-                width: grid.cellWidth
-                height: grid.cellHeight
-
-                Rectangle {
-                    id: card
-                    anchors.fill: parent
-                    anchors.margins: 6
-                    radius: 6
-                    color: Qt.hsla(model.hue / 360.0, 0.45, 0.28, 1.0)
-                    border.color: grid.currentIndex === index ? "#7fb2ff" : "transparent"
-                    border.width: 2
-
-                    Rectangle {
-                        // Poster placeholder rectangle, 16:9 area
-                        anchors {
-                            top: parent.top
-                            left: parent.left
-                            right: parent.right
-                            margins: 8
-                        }
-                        height: parent.height - 44
-                        radius: 4
-                        color: Qt.hsla(model.hue / 360.0, 0.5, 0.42, 1.0)
-
+            Layout.preferredHeight: rootRow.implicitHeight + 12
+            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+            RowLayout {
+                id: rootRow
+                x: 6
+                spacing: 6
+                Repeater {
+                    model: rootModel
+                    delegate: Rectangle {
+                        radius: 10
+                        color: "#26262e"
+                        implicitHeight: 30
+                        implicitWidth: rootLabel.implicitWidth + removeButton.implicitWidth + 28
                         Label {
-                            anchors.centerIn: parent
-                            text: model.dimensions
-                            color: "#e9e9f0"
-                            font.pixelSize: 14
+                            id: rootLabel
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: 10
+                            text: rootName + (rootStatus !== "ok" ? " (" + rootStatus + ")" : "")
+                            color: rootStatus === "ok" ? "#e9e9f0" : "#ffb36b"
+                        }
+                        Button {
+                            id: removeButton
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 8
+                            flat: true
+                            text: "✕"
+                            onClicked: catalogue.removeRoot(rootId)
                         }
                     }
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
 
+        ListView {
+            id: list
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            model: catalogueModel
+            clip: true
+            reuseItems: true
+
+            delegate: Rectangle {
+                width: list.width
+                height: 44
+                color: index % 2 === 0 ? "#1a1a20" : "#1e1e26"
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 10
                     Label {
-                        anchors {
-                            bottom: parent.bottom
-                            left: parent.left
-                            right: parent.right
-                            margins: 8
-                        }
+                        Layout.preferredWidth: 340
                         text: model.name
                         elide: Text.ElideRight
                         color: "#f2f2f6"
-                        font.pixelSize: 13
                     }
-
                     Label {
-                        anchors {
-                            bottom: parent.bottom
-                            right: parent.right
-                            margins: 8
-                        }
-                        text: model.duration + " · " + model.size
-                        color: "#c9c9d4"
-                        font.pixelSize: 11
+                        Layout.preferredWidth: 200
+                        text: model.path
+                        elide: Text.ElideMiddle
+                        color: "#8b8b96"
+                        font.pixelSize: 12
                     }
-                }
-
-                TapHandler {
-                    onTapped: grid.currentIndex = index
+                    Label {
+                        Layout.preferredWidth: 80
+                        text: model.sizeText
+                        color: "#c9c9d4"
+                    }
+                    Label {
+                        Layout.preferredWidth: 70
+                        text: model.durationText
+                        color: "#c9c9d4"
+                    }
+                    Label {
+                        Layout.preferredWidth: 90
+                        text: model.resolution
+                        color: "#c9c9d4"
+                    }
+                    Label {
+                        Layout.preferredWidth: 60
+                        text: model.codec
+                        color: "#c9c9d4"
+                    }
+                    Label {
+                        Layout.preferredWidth: 40
+                        text: model.views
+                        color: "#c9c9d4"
+                    }
+                    Button {
+                        text: "−"
+                        flat: true
+                        onClicked: catalogue.setRating(model.videoId,
+                                                       Math.max(0, model.rating - 1))
+                    }
+                    Label {
+                        Layout.preferredWidth: 52
+                        text: model.rating === 0 ? qsTr("unrated")
+                                                 : "★".repeat(model.rating)
+                        color: "#ffd166"
+                    }
+                    Button {
+                        text: "+"
+                        flat: true
+                        onClicked: catalogue.setRating(model.videoId,
+                                                       Math.min(5, model.rating + 1))
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: model.availability + "/" + model.probeStatus
+                        color: model.probeStatus === "ok" ? "#7fd18b"
+                             : model.probeStatus === "error" ? "#ff8a80"
+                             : model.probeStatus === "timeout" ? "#ffb36b"
+                             : "#9a9aa6"
+                        font.pixelSize: 12
+                    }
                 }
             }
 
             ScrollBar.vertical: ScrollBar { }
+
+            Label {
+                anchors.centerIn: parent
+                visible: catalogueModel.count === 0
+                text: qsTr("No videos yet — add a folder to start discovery.")
+                color: "#8b8b96"
+            }
         }
 
         Label {
+            id: errorLabel
             Layout.fillWidth: true
-            Layout.margins: 6
-            text: qsTr("Milestone 0 — virtual grid smoke test; catalogue, search, and previews arrive in later milestones.")
-            color: "#8b8b96"
+            Layout.margins: 4
+            color: "#ff8a80"
             font.pixelSize: 12
+            text: ""
+        }
+    }
+
+    FolderDialog {
+        id: folderDialog
+        onAccepted: catalogue.addRoot(selectedFolder)
+    }
+
+    Connections {
+        target: catalogue
+        function onOperationFailed(message) { errorLabel.text = message }
+        function onRootRejected(reason) { errorLabel.text = reason }
+    }
+
+    ListModel {
+        id: rootModel
+    }
+
+    Connections {
+        target: catalogue
+        function onRootAdded(root) {
+            rootModel.append({ rootId: root.id, rootName: root.path, rootStatus: root.status })
+        }
+        function onRootRemoved(rootId) {
+            for (let i = 0; i < rootModel.count; ++i) {
+                if (rootModel.get(i).rootId === rootId) {
+                    rootModel.remove(i)
+                    return
+                }
+            }
         }
     }
 }

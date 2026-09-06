@@ -2,7 +2,12 @@
 add_library(itub_core STATIC
     app/ProfilePaths.h app/ProfilePaths.cpp
     catalogue/SourceScanner.h catalogue/SourceScanner.cpp
-    catalogue/GridModel.h catalogue/GridModel.cpp
+    catalogue/Database.h catalogue/Database.cpp
+    catalogue/Catalogue.h catalogue/Catalogue.cpp
+    catalogue/CatalogueModel.h catalogue/CatalogueModel.cpp
+    catalogue/CatalogueProxy.h catalogue/CatalogueProxy.cpp
+    catalogue/VideoRow.h
+    media/Probe.h media/Probe.cpp
 )
 
 target_include_directories(itub_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

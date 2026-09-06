@@ -30,12 +30,21 @@ public:
     Q_INVOKABLE void resumeScanning();
     Q_INVOKABLE void cancelScanning();
     Q_INVOKABLE void setRating(qint64 videoId, int rating);
+    Q_INVOKABLE void openInDefaultPlayer(qint64 videoId);
+    Q_INVOKABLE void requestStoryboard(qint64 videoId);
+    Q_INVOKABLE void hoverEngage(qint64 videoId);
+    Q_INVOKABLE void requestSampleTimes(qint64 videoId);
+    Q_INVOKABLE void loadExistingState();
 
 signals:
     void rootAdded(const itub::RootInfo& root);
     void rootRemoved(qint64 rootId);
     void rootRejected(const QString& reason);
     void operationFailed(const QString& message);
+    void hoverSourceReady(qint64 videoId, qint64 revision, const QString& absolutePath,
+                          qint64 durationMs);
+    void sampleTimesReady(qint64 videoId, const QVariantList& timesMs);
+    void cacheEntryChanged(qint64 videoId, const QString& profile);
 
 private:
     Catalogue* m_catalogue;

@@ -4,21 +4,22 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import itub.media
 
 ApplicationWindow {
     id: window
     width: 1280
-    height: 800
+    height: 820
     visible: true
-    title: qsTr("itub — Video Catalogue (milestone 1)")
+    title: qsTr("itub — Video Catalogue")
     color: "#141418"
 
     function statusText() {
-        if (catalogueModel.scanState === "idle")
-            return qsTr("Idle")
-        return catalogueModel.scanState + qsTr(" — discovered %1 · probed %2 · errors %3")
-            .arg(catalogueModel.discovered).arg(catalogueModel.probed)
-            .arg(catalogueModel.errors)
+        const m = catalogueModel
+        if (m.scanState === "idle" || m.scanState === "complete")
+            return qsTr("%1 videos").arg(m.count)
+        return qsTr("%1 — discovered %2 · probed %3 · errors %4")
+            .arg(m.scanState).arg(m.discovered).arg(m.probed).arg(m.errors)
     }
 
     ColumnLayout {
@@ -44,13 +45,21 @@ ApplicationWindow {
                     onClicked: catalogue.resumeScanning()
                 }
                 Button {
-                    text: qsTr("Cancel")
+                    text: qsTr("Cancel scan")
                     onClicked: catalogue.cancelScanning()
                 }
                 Item { Layout.fillWidth: true }
                 Label {
                     text: window.statusText()
                     color: "#c9c9d4"
+                }
+                CheckBox {
+                    text: qsTr("Cached previews only")
+                    checked: !hoverSession.enabled
+                    onToggled: hoverSession.enabled = !checked
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 400
+                    ToolTip.text: qsTr("When checked, hovering uses only cached storyboard frames and never reads the original file.")
                 }
             }
         }
@@ -85,6 +94,9 @@ ApplicationWindow {
                             anchors.rightMargin: 8
                             flat: true
                             text: "✕"
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 400
+                            ToolTip.text: qsTr("Remove folder from catalogue (media files are not touched)")
                             onClicked: catalogue.removeRoot(rootId)
                         }
                     }
@@ -93,98 +105,120 @@ ApplicationWindow {
             }
         }
 
-        ListView {
-            id: list
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            model: catalogueModel
-            clip: true
-            reuseItems: true
+            spacing: 0
 
-            delegate: Rectangle {
-                width: list.width
-                height: 44
-                color: index % 2 === 0 ? "#1a1a20" : "#1e1e26"
+            // Central virtual grid
+            GridView {
+                id: grid
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                model: catalogueModel
+                reuseItems: true
+                cacheBuffer: 600
+                clip: true
+                pixelAligned: true
+                keyNavigationEnabled: true
+                cellWidth: cardSize
+                cellHeight: Math.round(cardSize * 0.5625) + 66
+                property int cardSize: 240
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 10
-                    Label {
-                        Layout.preferredWidth: 340
-                        text: model.name
-                        elide: Text.ElideRight
-                        color: "#f2f2f6"
-                    }
-                    Label {
-                        Layout.preferredWidth: 200
-                        text: model.path
-                        elide: Text.ElideMiddle
-                        color: "#8b8b96"
-                        font.pixelSize: 12
-                    }
-                    Label {
-                        Layout.preferredWidth: 80
-                        text: model.sizeText
-                        color: "#c9c9d4"
-                    }
-                    Label {
-                        Layout.preferredWidth: 70
-                        text: model.durationText
-                        color: "#c9c9d4"
-                    }
-                    Label {
-                        Layout.preferredWidth: 90
-                        text: model.resolution
-                        color: "#c9c9d4"
-                    }
-                    Label {
-                        Layout.preferredWidth: 60
-                        text: model.codec
-                        color: "#c9c9d4"
-                    }
-                    Label {
-                        Layout.preferredWidth: 40
-                        text: model.views
-                        color: "#c9c9d4"
-                    }
-                    Button {
-                        text: "−"
-                        flat: true
-                        onClicked: catalogue.setRating(model.videoId,
-                                                       Math.max(0, model.rating - 1))
-                    }
-                    Label {
-                        Layout.preferredWidth: 52
-                        text: model.rating === 0 ? qsTr("unrated")
-                                                 : "★".repeat(model.rating)
-                        color: "#ffd166"
-                    }
-                    Button {
-                        text: "+"
-                        flat: true
-                        onClicked: catalogue.setRating(model.videoId,
-                                                       Math.min(5, model.rating + 1))
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        text: model.availability + "/" + model.probeStatus
-                        color: model.probeStatus === "ok" ? "#7fd18b"
-                             : model.probeStatus === "error" ? "#ff8a80"
-                             : model.probeStatus === "timeout" ? "#ffb36b"
-                             : "#9a9aa6"
-                        font.pixelSize: 12
-                    }
+                boundsBehavior: Flickable.StopAtBounds
+
+                delegate: VideoCard {
+                    width: grid.cellWidth
+                    height: grid.cellHeight
+                }
+
+                ScrollBar.vertical: ScrollBar { }
+
+                Label {
+                    anchors.centerIn: parent
+                    visible: catalogueModel.count === 0
+                    text: qsTr("No videos yet.\nAdd a folder to start discovery.")
+                    horizontalAlignment: Text.AlignHCenter
+                    color: "#8b8b96"
                 }
             }
 
-            ScrollBar.vertical: ScrollBar { }
+            // Details panel
+            Rectangle {
+                id: detailsPanel
+                Layout.preferredWidth: 300
+                Layout.fillHeight: true
+                color: "#1a1a20"
+                visible: detailsVideoId >= 0
 
-            Label {
-                anchors.centerIn: parent
-                visible: catalogueModel.count === 0
-                text: qsTr("No videos yet — add a folder to start discovery.")
-                color: "#8b8b96"
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 6
+
+                    Label {
+                        text: detailsName
+                        wrapMode: Text.Wrap
+                        color: "#f2f2f6"
+                        font.pixelSize: 15
+                        Layout.fillWidth: true
+                    }
+                    DetailRow { label: qsTr("Path"); value: detailsPath }
+                    DetailRow { label: qsTr("Size"); value: detailsSizeBytes + " bytes" }
+                    DetailRow { label: qsTr("Duration"); value: detailsDuration }
+                    DetailRow { label: qsTr("Resolution"); value: detailsResolution }
+                    DetailRow { label: qsTr("Codec"); value: detailsCodec }
+                    DetailRow { label: qsTr("Views"); value: detailsViews }
+                    DetailRow { label: qsTr("Status"); value: detailsAvailability + " / " + detailsProbeStatus }
+
+                    Item { Layout.fillHeight: true }
+
+                    Button {
+                        Layout.fillWidth: true
+                        text: qsTr("Open in default player")
+                        onClicked: catalogue.openInDefaultPlayer(detailsVideoId)
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        text: qsTr("Precompute timeline preview")
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: qsTr("Generate the 24-frame cached storyboard for precise cached scrubbing.")
+                        onClicked: catalogue.requestStoryboard(detailsVideoId)
+                    }
+                    // Keyboard-equivalent scrubbing (§6): a slider driving the
+                    // same paused-player session as pointer hover.
+                    Slider {
+                        id: scrubSlider
+                        Layout.fillWidth: true
+                        from: 0
+                        to: detailsDurationMs > 0 ? detailsDurationMs : 1
+                        property bool engaged: false
+                        onMoved: {
+                            if (detailsVideoId > 0 && detailsDurationMs > 0) {
+                                if (!engaged) {
+                                    engaged = true
+                                    hoverSession.engage(detailsVideoId, detailsRevision,
+                                                        "", detailsDurationMs)
+                                    // Path arrives via hoverSourceReady.
+                                    catalogue.hoverEngage(detailsVideoId)
+                                }
+                                hoverSession.scrub(value)
+                            }
+                        }
+                        onPressedChanged: if (!pressed) {
+                            engaged = false
+                            hoverSession.disengage()
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Button {
+                            text: qsTr("Clear rating")
+                            onClicked: catalogue.setRating(detailsVideoId, 0)
+                        }
+                    }
+                }
             }
         }
 
@@ -203,18 +237,40 @@ ApplicationWindow {
         onAccepted: catalogue.addRoot(selectedFolder)
     }
 
+    // Selection data for the details panel
+    property string detailsName: ""
+    property string detailsPath: ""
+    property string detailsSizeBytes: ""
+    property string detailsDuration: ""
+    property int detailsDurationMs: 0
+    property int detailsRevision: 0
+    property string detailsResolution: ""
+    property string detailsCodec: ""
+    property string detailsViews: ""
+    property string detailsAvailability: ""
+    property string detailsProbeStatus: ""
+    property int detailsVideoId: -1
+
+    function showDetails(videoId, name, path, sizeText, durationText, durationMs,
+                         revision, resolution, codec, views, availability, probeStatus) {
+        detailsVideoId = videoId
+        detailsName = name
+        detailsPath = path
+        detailsSizeBytes = sizeText
+        detailsDuration = durationText
+        detailsDurationMs = durationMs
+        detailsRevision = revision
+        detailsResolution = resolution
+        detailsCodec = codec
+        detailsViews = views
+        detailsAvailability = availability
+        detailsProbeStatus = probeStatus
+    }
+
     Connections {
         target: catalogue
         function onOperationFailed(message) { errorLabel.text = message }
         function onRootRejected(reason) { errorLabel.text = reason }
-    }
-
-    ListModel {
-        id: rootModel
-    }
-
-    Connections {
-        target: catalogue
         function onRootAdded(root) {
             rootModel.append({ rootId: root.id, rootName: root.path, rootStatus: root.status })
         }
@@ -226,5 +282,15 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    ListModel { id: rootModel }
+
+    component DetailRow: RowLayout {
+        property string label
+        property string value
+        Layout.fillWidth: true
+        Label { text: parent.label; color: "#8b8b96"; Layout.preferredWidth: 90 }
+        Label { text: parent.value; color: "#e9e9f0"; elide: Text.ElideMiddle; Layout.fillWidth: true }
     }
 }

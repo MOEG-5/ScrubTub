@@ -43,6 +43,9 @@ public:
         ProbeStatusRole,
         DisplayWidthRole,
         DisplayHeightRole,
+        RevisionRole,
+        PosterSourceRole,
+        AtlasSourceRole,
     };
     Q_ENUM(Roles)
 

@@ -10,10 +10,15 @@
 
 #include <cstdio>
 
+#include <QQmlEngine>
+
 #include "app/ProfilePaths.h"
 #include "catalogue/Catalogue.h"
 #include "catalogue/CatalogueModel.h"
 #include "catalogue/CatalogueProxy.h"
+#include "media/HoverFrameItem.h"
+#include "media/HoverSession.h"
+#include "media/PreviewProvider.h"
 
 namespace {
 
@@ -49,6 +54,13 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext& context,
 int main(int argc, char* argv[])
 {
     QGuiApplication app(argc, argv);
+    // Convenience for tests and first-run automation: add a root at startup.
+    QString autoRoot;
+    const QStringList args = app.arguments();
+    for (int i = 1; i < args.size(); ++i) {
+        if (args.at(i) == QStringLiteral("--add-root") && i + 1 < args.size())
+            autoRoot = args.at(++i);
+    }
     QGuiApplication::setOrganizationName(QStringLiteral("itub-project"));
     QGuiApplication::setApplicationName(QStringLiteral("itub"));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("Video Catalogue"));
@@ -104,8 +116,30 @@ int main(int argc, char* argv[])
                      catalogueModel, &itub::CatalogueModel::applyRows);
     QObject::connect(catalogue, &itub::Catalogue::scanProgress,
                      catalogueModel, &itub::CatalogueModel::applyProgress);
+    // Restore the previous session now that the UI bridges are connected.
+    proxy.loadExistingState();
+
+    itub::HoverSession hoverSession(&app);
 
     QQmlApplicationEngine engine;
+    qmlRegisterType<itub::HoverFrameItem>("itub.media", 1, 0, "HoverFrameItem");
+    // Poster/atlas paths are derived deterministically from the profile cache
+    // directory; no database access happens on the UI thread (§2).
+    const QString thumbsDir =
+        itub::ProfilePaths::profileDataDir() + QStringLiteral("/thumbs");
+    engine.addImageProvider(
+        QStringLiteral("previews"),
+        new itub::PreviewProvider([thumbsDir](qint64 videoId, qint64 revision, bool poster) {
+            const QString profile = poster ? QStringLiteral("poster-320-v1")
+                                           : QStringLiteral("sb-320-v1");
+            if (videoId <= 0 || revision <= 0)
+                return QString();
+            return thumbsDir + QStringLiteral("/%1-%2-%3.jpg")
+                .arg(videoId)
+                .arg(revision)
+                .arg(profile);
+        }));
+    engine.rootContext()->setContextProperty(QStringLiteral("hoverSession"), &hoverSession);
     engine.rootContext()->setContextProperty(QStringLiteral("catalogue"), &proxy);
     engine.rootContext()->setContextProperty(QStringLiteral("catalogueModel"),
                                              catalogueModel);
@@ -114,6 +148,11 @@ int main(int argc, char* argv[])
         qCritical("Failed to load the main QML module");
         return 1;
     }
+    if (!autoRoot.isEmpty())
+        QMetaObject::invokeMethod(catalogue, [catalogue, autoRoot] {
+            catalogue->addRoot(autoRoot);
+        }, Qt::QueuedConnection);
+
     const int exitCode = app.exec();
 
     catalogueThread->quit();

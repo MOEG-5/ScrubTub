@@ -18,6 +18,9 @@ CatalogueProxy::CatalogueProxy(Catalogue* catalogue, CatalogueModel* model,
     connect(catalogue, &Catalogue::rootRemoved, this, &CatalogueProxy::rootRemoved);
     connect(catalogue, &Catalogue::rootRejected, this, &CatalogueProxy::rootRejected);
     connect(catalogue, &Catalogue::operationFailed, this, &CatalogueProxy::operationFailed);
+    connect(catalogue, &Catalogue::hoverSourceReady, this, &CatalogueProxy::hoverSourceReady);
+    connect(catalogue, &Catalogue::sampleTimesReady, this, &CatalogueProxy::sampleTimesReady);
+    connect(catalogue, &Catalogue::cacheEntryChanged, this, &CatalogueProxy::cacheEntryChanged);
 }
 
 void CatalogueProxy::addRoot(const QString& path, bool includeHidden)
@@ -60,6 +63,41 @@ void CatalogueProxy::setRating(qint64 videoId, int rating)
 {
     QMetaObject::invokeMethod(m_catalogue, [this, videoId, rating] {
         m_catalogue->setRating(videoId, rating);
+    });
+}
+
+void CatalogueProxy::openInDefaultPlayer(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->openInDefaultPlayer(videoId);
+    });
+}
+
+void CatalogueProxy::requestStoryboard(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->requestStoryboard(videoId);
+    });
+}
+
+void CatalogueProxy::hoverEngage(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->hoverEngage(videoId);
+    });
+}
+
+void CatalogueProxy::loadExistingState()
+{
+    QMetaObject::invokeMethod(m_catalogue, [this] {
+        m_catalogue->loadExistingState();
+    });
+}
+
+void CatalogueProxy::requestSampleTimes(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->requestSampleTimes(videoId);
     });
 }
 

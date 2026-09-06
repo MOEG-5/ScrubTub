@@ -73,6 +73,15 @@ public slots:
     // launch request; failed handoffs do not count.
     void openInDefaultPlayer(qint64 videoId);
 
+    // Restores the previous session's roots and rows (§1 persistence).
+    // Called after UI connections are in place so nothing is lost.
+    void loadExistingState();
+
+    // Hover plumbing: resolve the source for the paused-player session on the
+    // catalogue thread; results are delivered queued to the UI.
+    void hoverEngage(qint64 videoId);
+    void requestSampleTimes(qint64 videoId);
+
 signals:
     void rootAdded(const itub::RootInfo& root);
     void rootRemoved(qint64 rootId);
@@ -81,6 +90,9 @@ signals:
     void rowsChanged(const QList<itub::VideoRow>& rows, bool reset);
     void ratingCommitted(qint64 videoId, int rating);
     void cacheEntryChanged(qint64 videoId, const QString& profile);
+    void hoverSourceReady(qint64 videoId, qint64 revision, const QString& absolutePath,
+                          qint64 durationMs);
+    void sampleTimesReady(qint64 videoId, const QVariantList& timesMs);
     void operationFailed(const QString& message);
 
 private:

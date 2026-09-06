@@ -79,6 +79,18 @@ QVariant CatalogueModel::data(const QModelIndex& index, int role) const
         return row.displayWidth;
     case DisplayHeightRole:
         return row.displayHeight;
+    case RevisionRole:
+        return row.revision;
+    // URLs appear only when the artifact exists: requesting earlier would
+    // cache a null result and never refresh (QML pixmap cache).
+    case PosterSourceRole:
+        return row.posterReady
+            ? QStringLiteral("image://previews/poster/%1-%2").arg(row.id).arg(row.revision)
+            : QString();
+    case AtlasSourceRole:
+        return row.atlasReady
+            ? QStringLiteral("image://previews/atlas/%1-%2").arg(row.id).arg(row.revision)
+            : QString();
     default:
         return {};
     }
@@ -93,7 +105,10 @@ QHash<int, QByteArray> CatalogueModel::roleNames() const
             {CodecRole, "codec"},      {RatingRole, "rating"},
             {ViewsRole, "views"},      {AvailabilityRole, "availability"},
             {ProbeStatusRole, "probeStatus"},
-            {DisplayWidthRole, "displayWidth"}, {DisplayHeightRole, "displayHeight"}};
+            {DisplayWidthRole, "displayWidth"}, {DisplayHeightRole, "displayHeight"},
+            {RevisionRole, "revision"},
+            {PosterSourceRole, "posterSource"},
+            {AtlasSourceRole, "atlasSource"}};
 }
 
 void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)

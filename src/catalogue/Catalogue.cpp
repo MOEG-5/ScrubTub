@@ -101,6 +101,23 @@ bool Catalogue::initialize(const QString& profileDataDir, const QString& ffprobe
     return true;
 }
 
+void Catalogue::loadExistingState()
+{
+    {
+        Statement st = m_db->prepare(
+            "SELECT id, path, status, include_hidden FROM roots ORDER BY id");
+        while (st.step()) {
+            RootInfo root;
+            root.id = st.int64(0);
+            root.path = st.text(1);
+            root.status = st.text(2);
+            root.includeHidden = st.int64(3) != 0;
+            emit rootAdded(root);
+        }
+    }
+    refreshRows();
+}
+
 void Catalogue::addRoot(const QString& path, bool includeHidden)
 {
     const QFileInfo info(path);
@@ -384,6 +401,16 @@ void Catalogue::runEnumerationLocked(qint64 rootId, bool force)
                     upd.run();
                     m_db->exec("DELETE FROM jobs WHERE video_id="
                                + QString::number(id).toUtf8());
+                    // Invalidate extracted data: rows and their owned
+                    // artifact files go together (§4, §6).
+                    {
+                        Statement artifacts = m_db->prepare(
+                            "SELECT rel_path FROM cache_entries WHERE video_id=?");
+                        artifacts.bind(1, id);
+                        while (artifacts.step())
+                            QFile::remove(m_cacheDir + QLatin1Char('/')
+                                          + artifacts.text(0));
+                    }
                     m_db->exec("DELETE FROM cache_entries WHERE video_id="
                                + QString::number(id).toUtf8());
                     Statement job = m_db->prepare(
@@ -827,6 +854,7 @@ void Catalogue::applyExtractResult(ActiveJob* job, const ExtractResult& result)
     del.bind(1, job->jobId);
     del.run();
     emit cacheEntryChanged(job->videoId, profile);
+    emitRows(QList<VideoRow>{readRow(job->videoId)});
     enforceCacheLimit();
     dispatchJobs();
 }
@@ -878,6 +906,44 @@ void Catalogue::openInDefaultPlayer(qint64 videoId)
     // handoffs do not count.
     if (QDesktopServices::openUrl(QUrl::fromLocalFile(absPath)))
         incrementViews(videoId);
+}
+
+void Catalogue::hoverEngage(qint64 videoId)
+{
+    Statement info = m_db->prepare(
+        "SELECT v.revision, v.rel_path, r.path, v.duration_ms, v.availability "
+        "FROM videos v JOIN roots r ON r.id = v.root_id WHERE v.id=?");
+    info.bind(1, videoId);
+    if (!info.step()) {
+        emit hoverSourceReady(videoId, 0, QString(), -1);
+        return;
+    }
+    const qint64 revision = info.int64(0);
+    const QString absPath = info.text(2) + QLatin1Char('/') + info.text(1);
+    const qint64 durationMs = info.isNull(3) ? -1 : info.int64(3);
+    const QString availability = info.text(4);
+    // The original-file session reads only available files (§6).
+    if (availability != QLatin1String("available"))
+        emit hoverSourceReady(videoId, revision, QString(), durationMs);
+    else
+        emit hoverSourceReady(videoId, revision, absPath, durationMs);
+}
+
+void Catalogue::requestSampleTimes(qint64 videoId)
+{
+    Statement info = m_db->prepare(
+        "SELECT sample_times FROM cache_entries WHERE video_id=? AND kind='storyboard'");
+    info.bind(1, videoId);
+    if (!info.step()) {
+        emit sampleTimesReady(videoId, {});
+        return;
+    }
+    const QJsonDocument doc =
+        QJsonDocument::fromJson(info.text(0).toUtf8());
+    QVariantList times;
+    for (const QJsonValue& v : doc.array())
+        times.append(v.toVariant());
+    emit sampleTimesReady(videoId, times);
 }
 
 void Catalogue::killActiveJobs()
@@ -985,7 +1051,10 @@ VideoRow Catalogue::readRow(qint64 videoId)
     Statement st = m_db->prepare(
         "SELECT id, root_id, rel_path, file_name, size_bytes, mtime_ms, revision, "
         "duration_ms, display_width, display_height, codec, rating, views, added_ms, "
-        "availability, probe_status FROM videos WHERE id=?");
+        "availability, probe_status, "
+        "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='poster'), "
+        "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='storyboard') "
+        "FROM videos v WHERE v.id=?");
     st.bind(1, videoId);
     if (!st.step())
         return row;
@@ -1005,6 +1074,8 @@ VideoRow Catalogue::readRow(qint64 videoId)
     row.addedMs = st.int64(13);
     row.availability = st.text(14);
     row.probeStatus = st.text(15);
+    row.posterReady = st.int64(16) != 0;
+    row.atlasReady = st.int64(17) != 0;
     return row;
 }
 

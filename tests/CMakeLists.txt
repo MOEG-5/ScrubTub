@@ -48,6 +48,32 @@ add_test(NAME catalogue
     COMMAND tst_catalogue
 )
 
-set_target_properties(tst_filesafety tst_probe tst_catalogue PROPERTIES
+add_executable(tst_extract
+    tst_extract.cpp
+)
+target_link_libraries(tst_extract PRIVATE
+    itub_testsupport itub_core Qt6::Test itub_defaults
+)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../testvideo1.mp4")
+    target_compile_definitions(tst_extract PRIVATE
+        ITUB_DEFAULT_SOURCE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../testvideo1.mp4")
+endif()
+add_test(NAME extract
+    COMMAND tst_extract
+)
+
+add_executable(tst_preview
+    tst_preview.cpp
+)
+target_link_libraries(tst_preview PRIVATE
+    itub_testsupport itub_core Qt6::Quick Qt6::Test itub_defaults
+)
+add_test(NAME preview
+    COMMAND tst_preview
+)
+
+set_target_properties(tst_filesafety tst_probe tst_catalogue tst_extract tst_preview PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+

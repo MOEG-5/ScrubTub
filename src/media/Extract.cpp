@@ -49,8 +49,12 @@ QStringList posterArguments(const QString& source, const QString& out, int strea
 QStringList sampleArguments(const QString& source, const QString& out, int streamIndex,
                             double seekSeconds, int targetWidth)
 {
+    // -copyts keeps the original presentation timestamps: without it, the
+    // input-seek shift re-bases the delivered pts_time to ~0 and the recorded
+    // "actual" sample times would be wrong (§6: record actual timestamps).
     QStringList args{QStringLiteral("-v"), QStringLiteral("info"),
                      QStringLiteral("-nostdin"),
+                     QStringLiteral("-copyts"),
                      QStringLiteral("-threads"), QStringLiteral("1")};
     if (seekSeconds > 0)
         args << QStringLiteral("-ss") << QString::number(seekSeconds, 'f', 3);
@@ -156,7 +160,6 @@ QVector<qint64> Extract::samplePlanMs(qint64 durationMs, int sampleCount)
 ExtractResult Extract::poster(const PosterRequest& request, const PidSink& pidSink,
                               const std::atomic_bool* cancelled)
 {
-    qWarning("DBG Extract::poster enter: src=%s out=%s", qUtf8Printable(request.sourcePath), qUtf8Printable(request.outputPath));
     ExtractResult result;
     // 10 % of the duration; 0 s when unknown or very short (§6).
     const double seek =

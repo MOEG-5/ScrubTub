@@ -25,8 +25,17 @@ struct VideoRow {
     qint64 addedMs = 0;
     QString availability;       // unprobed|available|missing|unavailable
     QString probeStatus;        // pending|ok|error|timeout
+    bool posterReady = false;   // poster artifact exists in the cache
+    bool atlasReady = false;    // storyboard atlas exists in the cache
 };
 struct RootInfo {
+    Q_GADGET
+    Q_PROPERTY(qint64 id MEMBER id)
+    Q_PROPERTY(QString path MEMBER path)
+    Q_PROPERTY(QString status MEMBER status)
+    Q_PROPERTY(bool includeHidden MEMBER includeHidden)
+
+public:
     qint64 id = 0;
     QString path;
     QString status;

@@ -9,11 +9,15 @@ add_library(itub_core STATIC
     catalogue/VideoRow.h
     media/Probe.h media/Probe.cpp
     media/Extract.h media/Extract.cpp
+    media/HoverSession.h media/HoverSession.cpp
+    media/HoverFrameItem.h media/HoverFrameItem.cpp
+    media/PreviewProvider.h media/PreviewProvider.cpp
 )
 
 target_include_directories(itub_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(itub_core
-    PUBLIC Qt6::Core Qt6::Gui rapidfuzz::rapidfuzz SQLite3::SQLite3
+    PUBLIC Qt6::Core Qt6::Gui Qt6::Multimedia Qt6::Quick
+           rapidfuzz::rapidfuzz SQLite3::SQLite3
     INTERFACE itub_defaults)
 
 # GUI application
@@ -26,11 +30,12 @@ qt_add_qml_module(itub
     VERSION 1.0
     QML_FILES
         ui/Main.qml
+        ui/VideoCard.qml
 )
 
 target_link_libraries(itub PRIVATE
     itub_core
-    Qt6::Qml Qt6::Quick Qt6::QuickControls2
+    Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Multimedia
     itub_defaults
 )
 

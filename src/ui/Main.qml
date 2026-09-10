@@ -819,7 +819,7 @@ ApplicationWindow {
                 ActionButton { text: qsTr("Export catalogue backup…"); onClicked: exportDialog.open() }
                 ActionButton { text: qsTr("Restore catalogue from backup…"); onClicked: importDialog.open() }
                 ActionButton { text: qsTr("Clear generated previews…"); onClicked: clearDialog.open() }
-                ActionButton { text: qsTr("About & licenses"); onClicked: aboutDialog.open() }
+                ActionButton { text: qsTr("About and licenses"); onClicked: aboutDialog.open() }
             }
         }
     }

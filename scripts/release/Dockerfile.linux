@@ -6,10 +6,10 @@ RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.s
        build-essential cmake ninja-build meson nasm pkg-config python3-mako python3-jinja2 \
        curl ca-certificates git xz-utils patchelf \
        libass-dev libluajit-5.1-dev zlib1g-dev libsqlite3-dev \
-       qt6-base-dev qt6-declarative-dev qt6-tools-dev-tools \
+       qt6-base-dev qt6-declarative-dev qt6-tools-dev-tools qt6-svg-plugins \
        qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
        qml6-module-qtquick-dialogs qml6-module-qtquick-templates \
        qml6-module-qtquick-window qml6-module-qtqml-workerscript \
-       ffmpeg xvfb xauth
+       ffmpeg xvfb xauth xdotool
 WORKDIR /work
 ENV SCRUBTUB_MEDIA_ROOT=/work/media

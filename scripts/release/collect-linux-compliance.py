@@ -73,7 +73,7 @@ def main():
             continue
         for name in listing.read_text().splitlines():
             path = Path(name)
-            if name.startswith(('/usr/', '/lib/')) and path.is_file() and not path.is_symlink():
+            if name.startswith(('/usr/', '/lib/')) and path.is_file():
                 candidates[path.name].append((path, package))
     media_origins = {item['file']: Path(item['origin']) for item in
                      json.loads((stage / 'bin/media/runtime-origins.json').read_text())}

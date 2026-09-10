@@ -14,7 +14,9 @@ cmake -S /repo -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DSCRUBTUB_DEPLOY_QT=ON -DQT_DEPLOY_USE_PATCHELF=ON
 cmake --build /work/build -j "${SCRUBTUB_BUILD_JOBS:-8}"
 cmake --install /work/build --prefix /work/stage
+python3 /repo/scripts/release/stage-linux-qt.py /work/stage
 python3 /repo/scripts/release/stage-linux-media.py /work/stage/bin/media --prefix /work/media/prefix
+python3 /repo/scripts/release/smoke-linux-bundle.py /work/stage
 export SCRUBTUB_RELEASE_MEDIA_DIR=/work/stage/bin/media
 export SCRUBTUB_FFMPEG_PATH=/work/stage/bin/media/ffmpeg
 export SCRUBTUB_FFPROBE_PATH=/work/stage/bin/media/ffprobe

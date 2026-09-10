@@ -59,17 +59,17 @@ notes = f'''# ScrubTub {args.version} — {platform}
 A free video catalogue with thumbnails and silent live scrubbing. Opening a
 video launches your default player. Qt, mpv, FFmpeg and ffprobe are included.
 
-- [{binary.name}]({binary.name}) — application download
-- [{source.name}]({source.name}) — matching application and dependency sources,
+- [{binary.name}](https://github.com/MOEG-5/ScrubTub/releases/download/v{args.version}/{binary.name}) — application download
+- [{source.name}](https://github.com/MOEG-5/ScrubTub/releases/download/v{args.version}/{source.name}) — matching application and dependency sources,
   including distribution patches and build recipes
-- [SHA256SUMS.txt](SHA256SUMS.txt) — download checksums
+- [SHA256SUMS.txt](https://github.com/MOEG-5/ScrubTub/releases/download/v{args.version}/SHA256SUMS.txt) — download checksums
 
 Extract the entire application archive and start `bin/scrubtub{'.exe' if platform.startswith('windows') else ''}`.
 Keep the folders together. On Linux this build requires x86-64 and glibc 2.41 or
-newer; it was built on Debian 13. Windows builds require 64-bit Windows.
+newer and X11 or XWayland; it was built on Debian 13. Windows builds require 64-bit Windows.
 
 ScrubTub is GPL-3.0-only. Dependency copyright and license notices are in
-`share/scrubtub/`; they can also be opened from Settings → About & licenses.
+`share/scrubtub/`; they can also be opened from Settings → About and licenses.
 The source download above is the corresponding-source companion to this binary.
 Both downloads must remain available together. Provided without warranty.
 

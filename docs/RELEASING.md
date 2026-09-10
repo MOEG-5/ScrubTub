@@ -36,7 +36,7 @@ Outputs under `out/release/artifacts/`:
 - `RELEASE_NOTES.md`, ready to use as the GitHub release description
 
 Extract the whole application archive and run `bin/scrubtub`. Keep its `lib/`,
-`qml/`, plugin directories and `bin/media/` together. Settings → About & licenses
+`qml/`, plugin directories and `bin/media/` together. Settings → About and licenses
 opens the included notices directory.
 
 ## Private media build

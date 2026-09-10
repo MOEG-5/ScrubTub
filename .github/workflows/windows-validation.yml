@@ -17,7 +17,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            make curl tar xz zstd diffutils
+            make curl tar xz zstd diffutils git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja

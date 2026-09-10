@@ -50,9 +50,36 @@ XDG_DATA_HOME="$test_profile/data" XDG_CACHE_HOME="$test_profile/cache" \
 XDG_CONFIG_HOME="$test_profile/config" ./build/bin/scrubtub --add-root "$PWD/vids"
 ```
 
-Native Qt Test suites live in `tests/`. Their legacy fixture setup still
-copies/generates media, so inspect the relevant cases before running them;
-those cases do not yet follow the current as-is testing rule.
+Native Qt Test suites live in `tests/` and are registered with CTest:
+
+```sh
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCRUBTUB_TEST_VIDS_DIR="$PWD/vids"
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Media-dependent suites scan `vids/` in place and never write to it; tests that
+need to mutate media generate their own small clips in a temporary directory.
+`tst_performance` and `tst_catalogueupdates` need no media at all and run
+everywhere; they fence the large-library hot paths (model bookkeeping, fuzzy
+search) against regressions.
+
+### Performance knobs
+
+ScrubTub uses every core it can for media work: probes, poster extraction and
+storyboard generation run as independent single-threaded subprocesses, so the
+pool size is set from the CPU count rather than threading one decode. Override
+it when the machine is busy with something else:
+
+```sh
+SCRUBTUB_JOB_CONCURRENCY=8 ./build/bin/scrubtub
+```
+
+Hover previews use one private mpv process that is started on demand and shut
+down after a period of inactivity, so an idle window costs nothing while the
+first hover still gets a live frame in well under the dwell timeout. Cached
+storyboard tiles cover the gap in the meantime. `SCRUBTUB_MPV_PATH` and
+`SCRUBTUB_MPV_HWDEC` override the player binary and hardware decoding.
 
 ## Layout
 

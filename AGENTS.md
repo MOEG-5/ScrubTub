@@ -24,10 +24,18 @@ not active instructions; do not read it by default or revive its milestone plans
   vids/. Generated application previews belong in a separate test cache.
 - Use a disposable application profile outside vids/ for databases, settings,
   caches, and logs. Do not use the owner's existing catalogue or other libraries.
-- The legacy native fixture harness still copies/generates media. Inspect the
-  relevant test before running it; do not run copying or mutation cases against
-  vids/, or point SCRUBTUB_TEST_SOURCE_VIDEO at it as a workaround. Report skipped
-  coverage when a test cannot comply with the as-is rule.
+- Media-dependent suites read vids/ in place through
+  tests/testsupport/MediaFixtures.h (vidsDir/vidsFiles/smallestVideo/...). Point
+  them at the corpus with `-DSCRUBTUB_TEST_VIDS_DIR=<path>` at configure time or
+  the same-named environment variable at run time; they skip with a message when
+  it is missing. Expectations must come from the directory listing or from
+  ffprobe for the same file, never from copied fixtures or hard-coded durations.
+- Cases that must mutate media (trash, truncated or appended files, offline
+  roots, controlled folder trees) generate their own ORIGINAL clips with
+  MediaFixtures::makeSyntheticVideo() and mutate only those. Never mutate,
+  truncate or remove a file from vids/.
+- Suites that read vids/ assert it is unchanged (vidsFingerprint() compared
+  between initTestCase and cleanupTestCase).
 - Run checks appropriate to the change. Documentation-only edits need no app run.
 - GUI automation requires an isolated virtual display or an explicitly dedicated,
   disposable GUI session. Never attach to or interfere with the user's desktop.

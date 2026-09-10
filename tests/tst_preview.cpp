@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 the scrubtub authors.
-// PreviewProvider contract checks: async responses, bounded decode size,
-// missing-artifact behavior.
+// PreviewProvider contract checks: async responses, cancellation, bounded
+// decode size, missing-artifact behavior. Posters and atlases are produced by
+// the real extractor from the repository's vids/ corpus, read as-is
+// (AGENTS.md: read-only).
 #include <QGuiApplication>
 #include <QImage>
 #include <QColor>
@@ -17,25 +19,32 @@
 #include <QPainter>
 #include <QSGRendererInterface>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
 
 #include "catalogue/Catalogue.h"
 #include "catalogue/CatalogueModel.h"
 #include "catalogue/CatalogueProxy.h"
+#include "media/Extract.h"
 #include "media/HoverFrameItem.h"
 #include "media/HoverSession.h"
 #include "media/PreviewProvider.h"
+#include "media/Probe.h"
+#include "testsupport/MediaFixtures.h"
 
 using namespace scrubtub;
+using namespace scrubtub::testsupport;
 
 class StubCatalogue : public QObject {
     Q_OBJECT
     Q_PROPERTY(int currentIndex MEMBER currentIndex CONSTANT)
     Q_PROPERTY(bool moving MEMBER moving NOTIFY movingChanged)
+    Q_PROPERTY(bool cachedTimelineEnabled MEMBER cachedTimelineEnabled CONSTANT)
 public:
     int currentIndex = 0;
     bool moving = false;
+    bool cachedTimelineEnabled = true;
 public slots:
     void requestSampleTimes(qint64 id) { emit sampleTimesReady(id, {0, 1000}); }
     void requestStoryboard(qint64) {}
@@ -52,34 +61,81 @@ class TestPreviewProvider : public QObject {
     Q_OBJECT
 
 private slots:
-    void initTestCase() { QQuickWindow::setGraphicsApi(QSGRendererInterface::Software); }
+    void initTestCase();
+    void cleanupTestCase();
     void deliversExistingArtifact();
     void missingArtifactFinishesEmpty();
-    void scalesToRequestedSize();
+    void decodesArtifactAtRequestedSize();
+    void cancelledResponseStillFinishes();
     void atlasHoverSelectsOneTile();
     void mainWindowLoadsAndMapsRatingFilters();
 
 private:
-    static QString writePoster(const QTemporaryDir& dir, const QString& name,
-                               int width, int height);
+    QTemporaryDir m_cache;
+    QString m_poster;      // real poster extracted from the corpus
+    QSize m_posterSize;
+    QString m_atlas;       // real storyboard atlas extracted from the corpus
+    QString m_fingerprint;
 };
 
-QString TestPreviewProvider::writePoster(const QTemporaryDir& dir, const QString& name,
-                                         int width, int height)
+void TestPreviewProvider::initTestCase()
 {
-    const QString path = dir.filePath(name);
-    QImage image(width, height, QImage::Format_RGB32);
-    image.fill(0x336699);
-    image.save(path, "jpg", 90);
-    return path;
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+    // Read-only guard: the corpus must be byte-identical afterwards.
+    m_fingerprint = vidsFingerprint();
+
+    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffmpeg.isEmpty() || ffprobe.isEmpty())
+        return;
+    QString video = smallestVideo(QStringLiteral("mp4"));
+    if (video.isEmpty())
+        video = smallestVideo();
+    if (video.isEmpty())
+        return;
+    const ProbeResult probe = Probe::run(ffprobe, video);
+    if (!probe.ok)
+        return;
+
+    // The provider decodes what the extractor really wrote, not a painted
+    // stand-in: poster first (always available), atlas when the clip is long
+    // enough for a sample plan.
+    PosterRequest poster;
+    poster.ffmpegPath = ffmpeg;
+    poster.sourcePath = video;
+    poster.outputPath = m_cache.filePath(QStringLiteral("7-2-poster-320-v1.jpg"));
+    poster.durationMs = probe.durationMs;
+    poster.selectedStreamIndex = probe.selectedStreamIndex;
+    const ExtractResult posterResult = Extract::poster(poster);
+    if (posterResult.ok) {
+        m_poster = posterResult.outputPath;
+        m_posterSize = posterResult.pixelSize;
+    }
+
+    StoryboardRequest storyboard;
+    storyboard.ffmpegPath = ffmpeg;
+    storyboard.sourcePath = video;
+    storyboard.outputDir = m_cache.filePath(QStringLiteral("atlas-tmp"));
+    storyboard.outputPath = m_cache.filePath(QStringLiteral("7-2-atlas-240-5-v2.jpg"));
+    storyboard.durationMs = probe.durationMs;
+    storyboard.selectedStreamIndex = probe.selectedStreamIndex;
+    const ExtractResult storyboardResult = Extract::storyboard(storyboard);
+    if (storyboardResult.ok)
+        m_atlas = storyboardResult.outputPath;
+}
+
+void TestPreviewProvider::cleanupTestCase()
+{
+    QCOMPARE(vidsFingerprint(), m_fingerprint);
 }
 
 void TestPreviewProvider::deliversExistingArtifact()
 {
-    QTemporaryDir dir;
-    const QString path = writePoster(dir, QStringLiteral("7-2-poster-320-v1.jpg"), 320, 180);
+    if (m_poster.isEmpty())
+        QSKIP("vids/ corpus unavailable or poster extraction failed "
+              "(set SCRUBTUB_TEST_VIDS_DIR)");
 
-    PreviewProvider provider([path](qint64, qint64, bool) { return path; });
+    PreviewProvider provider([this](qint64, qint64, bool) { return m_poster; });
     // No requested size: the artifact is delivered at its stored size.
     QQuickImageResponse* response = provider.requestImageResponse(
         QStringLiteral("poster/7-2"), QSize());
@@ -88,7 +144,8 @@ void TestPreviewProvider::deliversExistingArtifact()
     QVERIFY2(spy.wait(10000), "provider response did not finish");
     QQuickTextureFactory* texture = response->textureFactory();
     QVERIFY(texture);
-    QCOMPARE(texture->textureSize().width(), 320);
+    QVERIFY(!m_posterSize.isEmpty());
+    QCOMPARE(texture->textureSize(), m_posterSize);
     delete response;
 }
 
@@ -105,20 +162,53 @@ void TestPreviewProvider::missingArtifactFinishesEmpty()
     delete response;
 }
 
-void TestPreviewProvider::scalesToRequestedSize()
+void TestPreviewProvider::decodesArtifactAtRequestedSize()
 {
-    QTemporaryDir dir;
-    const QString path = writePoster(dir, QStringLiteral("8-1-poster-320-v1.jpg"), 960, 540);
+    if (m_poster.isEmpty())
+        QSKIP("vids/ corpus unavailable or poster extraction failed "
+              "(set SCRUBTUB_TEST_VIDS_DIR)");
 
-    PreviewProvider provider([path](qint64, qint64, bool) { return path; });
+    PreviewProvider provider([this](qint64, qint64, bool) { return m_poster; });
+    const QSize requested(240, 135);
     QQuickImageResponse* response = provider.requestImageResponse(
-        QStringLiteral("poster/8-1"), QSize(240, 135));
+        QStringLiteral("poster/7-2"), requested);
+    QVERIFY(response);
     QSignalSpy spy(response, &QQuickImageResponse::finished);
     QVERIFY(spy.wait(10000));
     QQuickTextureFactory* texture = response->textureFactory();
     QVERIFY(texture);
-    // Decoded RAM is bounded to the requested card size (§6).
-    QCOMPARE(texture->textureSize().width(), 240);
+    // Decoded RAM is bounded to the requested card size (§6) and the stored
+    // aspect ratio survives the downscale.
+    QCOMPARE(texture->textureSize().width(), requested.width());
+    QVERIFY(texture->textureSize().height() > 0);
+    QVERIFY(texture->textureSize().height() <= m_posterSize.height());
+    const double decodedAspect = static_cast<double>(texture->textureSize().width())
+                                 / texture->textureSize().height();
+    const double storedAspect = static_cast<double>(m_posterSize.width())
+                                / m_posterSize.height();
+    QVERIFY(qAbs(decodedAspect - storedAspect) < 0.02);
+    delete response;
+}
+
+void TestPreviewProvider::cancelledResponseStillFinishes()
+{
+    if (m_atlas.isEmpty())
+        QSKIP("vids/ corpus unavailable or storyboard extraction failed "
+              "(set SCRUBTUB_TEST_VIDS_DIR)");
+
+    PreviewProvider provider([this](qint64, qint64, bool) { return m_atlas; });
+    QQuickImageResponse* response = provider.requestImageResponse(
+        QStringLiteral("atlas/7-2"), QSize(240, 90));
+    QVERIFY(response);
+    QSignalSpy spy(response, &QQuickImageResponse::finished);
+    // A response cancelled before its decode settles (the card scrolled away)
+    // must still deliver finished(), or QML waits on it forever.
+    response->cancel();
+    QVERIFY2(spy.wait(10000), "cancelled response did not finish");
+    if (QQuickTextureFactory* texture = response->textureFactory()) {
+        QVERIFY(texture->textureSize().width() <= 240);
+        QVERIFY(texture->textureSize().height() > 0);
+    }
     delete response;
 }
 
@@ -185,6 +275,9 @@ void TestPreviewProvider::atlasHoverSelectsOneTile()
     QQuickWindow window;
     window.setColor(Qt::black);
     window.resize(600, 300);
+    // VideoCard's unqualified `window` resolves to the harness's `window`
+    // context property (StubCatalogue), which therefore declares
+    // `cachedTimelineEnabled` like Main.qml's ApplicationWindow does.
     card->setParentItem(window.contentItem());
     card->setSize(QSizeF(600, 300));
     window.show();
@@ -228,7 +321,7 @@ void TestPreviewProvider::mainWindowLoadsAndMapsRatingFilters()
     QQmlComponent component(&engine, QFINDTESTDATA("../src/ui/Main.qml"));
     std::unique_ptr<QObject> window(component.create());
     QVERIFY2(window, qPrintable(component.errorString()));
-    QCOMPARE(window->property("title").toString(), QStringLiteral("ScrubTub — Video Catalogue"));
+    QCOMPARE(window->property("title").toString(), QStringLiteral("ScrubTub"));
     QVERIFY(QMetaObject::invokeMethod(window.get(), "selectLibrary",
         Q_ARG(QVariant, QStringLiteral("rated")), Q_ARG(QVariant, -1), Q_ARG(QVariant, QString())));
     QCOMPARE(window->property("libraryTitle").toString(), QStringLiteral("Rated videos"));

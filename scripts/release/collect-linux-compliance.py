@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 
@@ -172,6 +173,8 @@ def main():
         for path in (media / directory).iterdir():
             if path.is_file() and path.name.startswith(('LICENSE', 'COPYING', 'Copyright', 'COPYRIGHT')):
                 shutil.copy2(path, target / path.name)
+        subprocess.run([sys.executable, str(Path(__file__).with_name('collect-embedded-notices.py')),
+                        str(media / directory), str(target / 'SOURCE-NOTICES.txt')], check=True)
         if not list(target.iterdir()):
             raise RuntimeError(f'Missing private component notices: {name}')
         components[name] = dict(version=directory, license=license_id,

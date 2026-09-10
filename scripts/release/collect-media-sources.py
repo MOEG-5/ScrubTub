@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("destination", type=Path)
@@ -34,6 +36,8 @@ for name, archive in components.items():
     for file in (root / name).iterdir():
         if file.is_file() and file.name.startswith(("LICENSE", "COPYING", "Copyright", "COPYRIGHT")):
             shutil.copy2(file, notices / file.name)
+    subprocess.run([sys.executable, str(Path(__file__).with_name('collect-embedded-notices.py')),
+                    str(root / name), str(notices / 'SOURCE-NOTICES.txt')], check=True)
     if not list(notices.iterdir()):
         raise RuntimeError(f"Missing license texts for {name}")
 shutil.copytree(root / "manifests", sources / "build-manifests")

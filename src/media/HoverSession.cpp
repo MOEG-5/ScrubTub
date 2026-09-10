@@ -63,6 +63,20 @@ HoverSession::HoverSession(QObject* parent)
     m_coalesceTimer = new QTimer(this);
     m_coalesceTimer->setSingleShot(true);
     connect(m_coalesceTimer, &QTimer::timeout, this, &HoverSession::issueSeek);
+
+    // Bounded idle shutdown: a warm decoder that sees no engagement or scrub
+    // activity for the idle window is torn down; the next hover starts it
+    // lazily again (cached tiles cover the restart).
+    m_idleTimer = new QTimer(this);
+    m_idleTimer->setSingleShot(true);
+    connect(m_idleTimer, &QTimer::timeout, this, [this] {
+        if (m_backend == Backend::Mpv && m_videoId != 0) {
+            // Active hover: never yank the decoder; retry once it ends.
+            armIdleShutdown();
+            return;
+        }
+        cleanupMpv();
+    });
 }
 
 HoverSession::~HoverSession()
@@ -80,6 +94,22 @@ void HoverSession::setEnabled(bool enabled)
         cleanupMpv();
     }
     emit enabledChanged();
+}
+
+void HoverSession::setIdleShutdownMs(int ms)
+{
+    m_idleShutdownMs = qMax(0, ms);
+    if (m_idleShutdownMs <= 0 || !m_mpv)
+        m_idleTimer->stop();
+    else
+        m_idleTimer->start(m_idleShutdownMs);
+}
+
+void HoverSession::armIdleShutdown()
+{
+    if (m_idleShutdownMs <= 0 || !m_mpv)
+        return;
+    m_idleTimer->start(m_idleShutdownMs);
 }
 
 void HoverSession::setStatus(const QString& status)
@@ -124,6 +154,7 @@ void HoverSession::engageMpv(const QString& absolutePath)
     setStatus(QStringLiteral("loading"));
     m_settleTimer->start();
     startMpv();
+    armIdleShutdown();
     loadMpvSource();
 }
 
@@ -187,6 +218,7 @@ void HoverSession::startMpv()
     m_connectTimer->start();
     m_mpvTimeout->start(5000);
     m_mpv->start(m_mpvPath, args);
+    armIdleShutdown();
 }
 
 qint64 HoverSession::sendMpvCommand(const QJsonArray& command)
@@ -347,6 +379,7 @@ void HoverSession::failMpv()
 
 void HoverSession::cleanupMpv()
 {
+    m_idleTimer->stop();
     m_connectTimer->stop();
     m_mpvTimeout->stop();
     m_settleTimer->stop();
@@ -403,6 +436,7 @@ void HoverSession::scrub(qint64 timeMs)
 {
     if (!m_enabled || m_videoId == 0 || m_durationMs <= 0)
         return;
+    armIdleShutdown();
     // Clamp into the selected video stream's duration; at EOF request the
     // last representable frame rather than beyond the stream (§6).
     const qint64 clamped = qBound<qint64>(0, timeMs, qMax<qint64>(0, m_durationMs - 40));
@@ -442,6 +476,7 @@ void HoverSession::disengage()
         m_mpvTimeout->start(5000);
     }
     setStatus(QStringLiteral("idle"));
+    armIdleShutdown();
     emit frameChanged();
 }
 

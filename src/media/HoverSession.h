@@ -2,9 +2,11 @@
 // Copyright (C) 2026 the scrubtub authors.
 // Original-file paused scrubbing session (TECH_SPEC.md section 6).
 //
-// One idle mpv process, private IPC, keyframe seeks during motion and exact
+// One mpv process, private IPC, keyframe seeks during motion and exact
 // refinement on settle. Native image output survives stop/loadfile; sources
-// unload on leave while the process stays warm. Cached previews cover missing mpv.
+// unload on leave while the process stays warm for a bounded idle window and
+// is torn down afterwards (lazy restart on the next engagement). Cached
+// previews cover missing mpv and the restart window.
 #pragma once
 
 #include <QElapsedTimer>
@@ -30,6 +32,9 @@ class HoverSession : public QObject {
     Q_PROPERTY(qint64 videoId READ videoId NOTIFY frameChanged FINAL)
 
 public:
+    // Idle window before the warm decoder is torn down; 0 disables it.
+    static constexpr int kDefaultIdleShutdownMs = 45000;
+
     explicit HoverSession(QObject* parent = nullptr);
     ~HoverSession() override;
 
@@ -42,6 +47,8 @@ public:
 
     // Test hooks.
     void setMpvPath(const QString& path) { m_mpvPath = path; }
+    void setIdleShutdownMs(int ms);
+    int idleShutdownMs() const { return m_idleShutdownMs; }
 
 public slots:
     // Called after the hover dwell; loads the source paused with no output.
@@ -63,6 +70,7 @@ private:
     enum class Backend { None, Mpv };
 
     void setStatus(const QString& status);
+    void armIdleShutdown();
     void engageMpv(const QString& absolutePath);
     void startMpv();
     void loadMpvSource();
@@ -111,6 +119,8 @@ private:
     QElapsedTimer m_mpvSeekClock;
 
     QTimer* m_coalesceTimer = nullptr;
+    QTimer* m_idleTimer = nullptr;      // bounded warm-process lifetime
+    int m_idleShutdownMs = kDefaultIdleShutdownMs;
     bool m_seekInFlight = false;
 
 };

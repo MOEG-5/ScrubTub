@@ -66,7 +66,7 @@ video launches your default player. Qt, mpv, FFmpeg and ffprobe are included.
 
 Extract the entire application archive and start `bin/scrubtub{'.exe' if platform.startswith('windows') else ''}`.
 Keep the folders together. On Linux this build requires x86-64 and glibc 2.41 or
-newer and X11 or XWayland; it was built on Debian 13. Windows builds require 64-bit Windows.
+newer and X11 or XWayland; it was built on Debian 13. Windows builds target 64-bit Windows 10 (1809 or later) and Windows 11.
 
 ScrubTub is GPL-3.0-only. Dependency copyright and license notices are in
 `share/scrubtub/`; they can also be opened from Settings → About and licenses.

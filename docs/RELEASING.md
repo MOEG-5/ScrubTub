@@ -128,7 +128,8 @@ another dedicated disposable session and a separate application profile.
 ## Windows
 
 The manually dispatched `windows-validation.yml` workflow builds in MSYS2
-UCRT64. It stages Qt and the private tools, collects required DLLs, and checks
+UCRT64, targeting 64-bit Windows 10 (1809 or later) and Windows 11
+([Qt platform requirements](https://doc.qt.io/qt-6/supported-platforms.html)). It stages Qt and the private tools, collects required DLLs, and checks
 media executable startup with a Windows-only PATH. It runs the original-clip
 smoke test, then maps staged files to their installed MSYS2 packages.
 

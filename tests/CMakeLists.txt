@@ -2,12 +2,22 @@ find_file(SCRUBTUB_TEST_FIXTURE testvideo1.mp4
     PATHS "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../vids"
     NO_DEFAULT_PATH)
 
+# The read-only test corpus: the repository's own vids/ folder, scanned as-is
+# (AGENTS.md). Overridable per machine or per worktree at configure time
+# (-DSCRUBTUB_TEST_VIDS_DIR=...) or at run time (SCRUBTUB_TEST_VIDS_DIR env);
+# suites skip with a clear message when it is missing.
+set(SCRUBTUB_TEST_VIDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vids" CACHE PATH
+    "Directory scanned as-is by media-dependent tests")
+
 add_library(scrubtub_testsupport STATIC
     testsupport/TreeSnapshot.cpp
     testsupport/FixtureCorpus.cpp
+    testsupport/MediaFixtures.cpp
 )
 target_link_libraries(scrubtub_testsupport PUBLIC Qt6::Core)
 target_compile_definitions(scrubtub_testsupport PUBLIC QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII)
+target_compile_definitions(scrubtub_testsupport PUBLIC
+    SCRUBTUB_TEST_VIDS_DIR_DEFAULT="${SCRUBTUB_TEST_VIDS_DIR}")
 
 add_executable(tst_filesafety
     tst_filesafety.cpp

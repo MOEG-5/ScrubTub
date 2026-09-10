@@ -66,6 +66,10 @@ cd "$repo"
 mpv_args=(--prefix="$prefix" --libdir=lib --buildtype=release --strip
     -Dauto_features=disabled -Dlibmpv=false -Dcplayer=true -Dlua=luajit
     -Dgl=disabled -Dbuild-date=false)
+# Native Windows threading is required even with optional features disabled.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) mpv_args+=(-Dwin32-threads=enabled) ;;
+esac
 printf '%q ' meson setup "$root/mpv-build" "$root/mpv-0.41.0" "${mpv_args[@]}" > "$root/manifests/mpv-configure.sh"
 printf '\n' >> "$root/manifests/mpv-configure.sh"
 if [[ -f "$root/mpv-build/build.ninja" ]]; then

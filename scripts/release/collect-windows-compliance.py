@@ -68,7 +68,7 @@ def main():
                 component = 'dav1d'
             elif 'placebo' in name:
                 component = 'libplacebo'
-            elif name == 'mpv.exe':
+            elif name == 'mpv.exe' or name.startswith('libmpv-'):
                 component = 'mpv'
         if component is None:
             for candidate, package in candidates[path.name.lower()]:

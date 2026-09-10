@@ -26,16 +26,15 @@ QString qstringFromFsPath(const fs::path& p)
 // True when the native path bytes convert to QString and back unchanged.
 // On Linux the native encoding is bytes; anything that is not valid UTF-8
 // would be silently corrupted by lossy conversion, so it must be skipped
-// with a visible issue (TECH_SPEC.md section 3).
-bool nativePathRoundTrips(const fs::path& p)
+// with a visible issue (TECH_SPEC.md section 3). Qt substitutes U+FFFD for
+// every invalid sequence, so scanning for the replacement character is
+// equivalent to the round-trip test and allocates nothing.
+bool nativePathRoundTrips(const QString& converted)
 {
 #if defined(Q_OS_UNIX)
-    const std::string native = p.native();
-    const QString converted = QString::fromUtf8(native.c_str(),
-                                                static_cast<qsizetype>(native.size()));
-    return converted.toStdString() == native;
+    return !converted.contains(QChar::ReplacementCharacter);
 #else
-    Q_UNUSED(p);
+    Q_UNUSED(converted);
     return true; // Windows: paths are UTF-16 natively; no lossy narrow conversion.
 #endif
 }
@@ -43,6 +42,23 @@ bool nativePathRoundTrips(const fs::path& p)
 bool isHiddenName(const QString& name)
 {
     return name.startsWith(QLatin1Char('.'));
+}
+
+// Suffix of a path segment, lowercased, without building a QFileInfo.
+QString pathSuffix(const QString& path)
+{
+    const int slash = path.lastIndexOf(QLatin1Char('/'));
+    const int dot = path.lastIndexOf(QLatin1Char('.'));
+    if (dot <= slash + 1 || dot == path.size() - 1)
+        return {};
+    return path.mid(dot + 1).toLower();
+}
+
+// Trailing path segment, without building a QFileInfo.
+QString pathName(const QString& path)
+{
+    const int slash = path.lastIndexOf(QLatin1Char('/'));
+    return slash >= 0 ? path.mid(slash + 1) : path;
 }
 
 qint64 mtimeMs(const fs::directory_entry& entry, std::error_code& ec)
@@ -131,22 +147,21 @@ DiscoveryResult SourceScanner::enumerateRoot(const DiscoveryOptions& options,
             }
 
             if (fs::is_directory(status)) {
-                if (!allowHidden && isHiddenName(QFileInfo(qPath).fileName())) {
+                if (!allowHidden && isHiddenName(pathName(qPath)))
                     it.disable_recursion_pending(); // do not descend into hidden dirs
-                }
                 continue;
             }
 
             if (!fs::is_regular_file(status))
                 continue; // devices, FIFOs, sockets: never read
 
-            if (!nativePathRoundTrips(entryPath)) {
+            if (!nativePathRoundTrips(qPath)) {
                 result.issues.push_back({qPath,
                                          QStringLiteral("Filename encoding is not supported; skipped")});
                 continue;
             }
 
-            const QString suffix = QFileInfo(qPath).suffix().toLower();
+            const QString suffix = pathSuffix(qPath);
             if (!lowerExtensions.contains(suffix))
                 continue;
 

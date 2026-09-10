@@ -279,6 +279,9 @@ private:
     int m_probeTimeoutMs = 30000;  // §5: 30 s probe timeout
     int m_previewTimeoutMs = 60000; // §5: 60 s per-preview-job timeout
     qint64 m_diskCacheLimit = 5LL * 1024 * 1024 * 1024; // §6: 5 GiB default
+    // Running total of owned artifact bytes; -1 = unknown, recomputed once
+    // from SQLite on the first enforcement or usage query.
+    qint64 m_cacheBytes = -1;
 };
 
 } // namespace scrubtub

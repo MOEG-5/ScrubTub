@@ -260,6 +260,8 @@ void Catalogue::purgeCacheForVideos(const QList<qint64>& videoIds)
     });
     for (const QString& rel : relPaths)
         QFile::remove(m_cacheDir + QLatin1Char('/') + rel);
+    if (!relPaths.isEmpty())
+        m_cacheBytes = -1; // unknown; recomputed on the next check
 }
 
 void Catalogue::clearPreviews()
@@ -283,6 +285,7 @@ void Catalogue::clearPreviews()
         cacheDir.entryList(QStringList{QStringLiteral("tmp-*")}, QDir::Dirs);
     for (const QString& dir : tempDirs)
         QDir(m_cacheDir + QLatin1Char('/') + dir).removeRecursively();
+    m_cacheBytes = 0;
     emit rowsChanged(QList<VideoRow>{}, true);
     loadExistingState();
     emit cacheUsageReady(0);
@@ -292,7 +295,8 @@ void Catalogue::requestCacheUsage()
 {
     Statement st = m_db->prepare("SELECT COALESCE(SUM(bytes),0) FROM cache_entries");
     st.step();
-    emit cacheUsageReady(st.int64(0));
+    m_cacheBytes = st.int64(0);
+    emit cacheUsageReady(m_cacheBytes);
 }
 
 // --------------------------- settings persistence (§10) ---------------------

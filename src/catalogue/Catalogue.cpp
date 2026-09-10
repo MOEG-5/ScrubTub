@@ -434,9 +434,46 @@ void Catalogue::runEnumerationLocked(qint64 rootId, bool force)
         }
     };
 
+    // One prepared statement per distinct operation for the whole scan: the
+    // first scan of a large library ran three preparations per file.
+    Statement findRow = m_db->prepare(
+        "SELECT id, size_bytes, mtime_ms, revision, availability, probe_status "
+        "FROM videos WHERE root_id=? AND cmp_key=?");
+    Statement markSeen = m_db->prepare("UPDATE videos SET seen_generation=? WHERE id=?");
+    Statement ensureProbeJob = m_db->prepare(
+        "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
+        "VALUES(?,?,'probe','queued')");
+    Statement requeueProbe = m_db->prepare(
+        "UPDATE jobs SET state='queued', retries=0, error=NULL "
+        "WHERE video_id=? AND kind='probe' AND revision=?");
+    Statement revivMissing = m_db->prepare(
+        "UPDATE videos SET seen_generation=?, availability=? WHERE id=?");
+    Statement revivMissingProbed = m_db->prepare(
+        "UPDATE videos SET seen_generation=?, availability='available' WHERE id=?");
+    Statement updateChanged = m_db->prepare(
+        "UPDATE videos SET size_bytes=?, mtime_ms=?, revision=revision+1, "
+        "duration_ms=NULL, coded_width=NULL, coded_height=NULL, "
+        "display_width=NULL, display_height=NULL, rotation_deg=NULL, "
+        "codec=NULL, availability='unprobed', probe_status='pending', "
+        "probe_error=NULL, seen_generation=? WHERE id=?");
+    Statement dropJobs = m_db->prepare("DELETE FROM jobs WHERE video_id=?");
+    Statement listArtifacts = m_db->prepare(
+        "SELECT rel_path FROM cache_entries WHERE video_id=?");
+    Statement dropCache = m_db->prepare("DELETE FROM cache_entries WHERE video_id=?");
+    Statement insertVideo = m_db->prepare(
+        "INSERT INTO videos(root_id, rel_path, cmp_key, file_name, size_bytes, "
+        "mtime_ms, revision, views, added_ms, availability, probe_status, "
+        "seen_generation) VALUES(?,?,?,?,?,?,1,0,?,'unprobed','pending',?)");
+    Statement insertProbeJob = m_db->prepare(
+        "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
+        "VALUES(?,1,'probe','queued')");
+
     SourceScanner::BatchSink sink =
         [this, rootId, rootPath, generation, force, &rowsSinceCommit, &sinceCommit,
-         &pendingRows, &flushRows, &commitIfDue](QVector<DiscoveredFile>&& batch) {
+         &pendingRows, &flushRows, &commitIfDue,
+         &findRow, &markSeen, &ensureProbeJob, &requeueProbe, &revivMissing,
+         &revivMissingProbed, &updateChanged, &dropJobs, &listArtifacts, &dropCache,
+         &insertVideo, &insertProbeJob](QVector<DiscoveredFile>&& batch) {
             // Pause takes effect between batches; queued edits keep running.
             while (m_pauseRequested.load() && !m_cancelRequested.load()) {
                 QEventLoop loop;
@@ -458,132 +495,127 @@ void Catalogue::runEnumerationLocked(qint64 rootId, bool force)
                 const QString cmpKey = rel;
                 const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-                Statement find = m_db->prepare(
-                    "SELECT id, size_bytes, mtime_ms, revision, availability, probe_status "
-                    "FROM videos WHERE root_id=? AND cmp_key=?");
-                find.bind(1, rootId);
-                find.bind(2, cmpKey);
-                if (find.step()) {
-                    const qint64 id = find.int64(0);
-                    const qint64 oldSize = find.int64(1);
-                    const qint64 oldMtime = find.int64(2);
-                    const qint64 revision = find.int64(3);
-                    const QString availability = find.text(4);
-                    const QString probeStatus = find.text(5);
+                findRow.reset();
+                findRow.bind(1, rootId);
+                findRow.bind(2, cmpKey);
+                if (findRow.step()) {
+                    const qint64 id = findRow.int64(0);
+                    const qint64 oldSize = findRow.int64(1);
+                    const qint64 oldMtime = findRow.int64(2);
+                    const qint64 revision = findRow.int64(3);
+                    const QString availability = findRow.text(4);
+                    const QString probeStatus = findRow.text(5);
                     const bool unchanged = oldSize == static_cast<qint64>(file.sizeBytes)
                         && oldMtime == file.mtimeMs;
 
                     if (unchanged && !force && availability != QLatin1String("missing")) {
-                        Statement seen = m_db->prepare(
-                            "UPDATE videos SET seen_generation=? WHERE id=?");
-                        seen.bind(1, generation);
-                        seen.bind(2, id);
-                        seen.run();
+                        markSeen.reset();
+                        markSeen.bind(1, generation);
+                        markSeen.bind(2, id);
+                        markSeen.run();
                         if (probeStatus != QLatin1String("ok")
                             && availability != QLatin1String("missing")) {
                             // Present but never probed (or failed): ensure a
                             // queued probe job exists. INSERT covers rows whose
                             // jobs were lost (e.g. the pre-migration stall);
                             // the UPDATE revives error/queued entries.
-                            Statement insert = m_db->prepare(
-                                "INSERT OR IGNORE INTO jobs(video_id, revision, kind, "
-                                "state) VALUES(?,?,'probe','queued')");
-                            insert.bind(1, id);
-                            insert.bind(2, revision);
-                            insert.run();
-                            Statement requeue = m_db->prepare(
-                                "UPDATE jobs SET state='queued', retries=0, error=NULL "
-                                "WHERE video_id=? AND kind='probe' AND revision=?");
-                            requeue.bind(1, id);
-                            requeue.bind(2, revision);
-                            requeue.run();
+                            ensureProbeJob.reset();
+                            ensureProbeJob.bind(1, id);
+                            ensureProbeJob.bind(2, revision);
+                            ensureProbeJob.run();
+                            requeueProbe.reset();
+                            requeueProbe.bind(1, id);
+                            requeueProbe.bind(2, revision);
+                            requeueProbe.run();
                         }
                         continue;
                     }
                     if (unchanged && !force && availability == QLatin1String("missing")) {
                         // The file is back with identical identity: restore it.
-                        Statement seen = m_db->prepare(
-                            "UPDATE videos SET seen_generation=?, availability=? WHERE id=?");
-                        seen.bind(1, generation);
-                        seen.bind(2, probeStatus == QLatin1String("ok")
-                                         ? QStringLiteral("available")
-                                         : QStringLiteral("unprobed"));
-                        seen.bind(3, id);
-                        seen.run();
+                        revivMissing.reset();
+                        revivMissing.bind(1, generation);
+                        revivMissing.bind(2, probeStatus == QLatin1String("ok")
+                                                  ? QStringLiteral("available")
+                                                  : QStringLiteral("unprobed"));
+                        revivMissing.bind(3, id);
+                        revivMissing.run();
                         continue;
                     }
                     if (unchanged && force && probeStatus == QLatin1String("ok")
                         && availability == QLatin1String("missing")) {
-                        Statement seen = m_db->prepare(
-                            "UPDATE videos SET seen_generation=?, availability='available' "
-                            "WHERE id=?");
-                        seen.bind(1, generation);
-                        seen.bind(2, id);
-                        seen.run();
+                        revivMissingProbed.reset();
+                        revivMissingProbed.bind(1, generation);
+                        revivMissingProbed.bind(2, id);
+                        revivMissingProbed.run();
                         continue;
                     }
 
                     // Changed content at the same path: new revision, extracted
                     // data invalidated, annotations preserved (§4).
-                    Statement upd = m_db->prepare(
-                        "UPDATE videos SET size_bytes=?, mtime_ms=?, revision=revision+1, "
-                        "duration_ms=NULL, coded_width=NULL, coded_height=NULL, "
-                        "display_width=NULL, display_height=NULL, rotation_deg=NULL, "
-                        "codec=NULL, availability='unprobed', probe_status='pending', "
-                        "probe_error=NULL, seen_generation=? WHERE id=?");
-                    upd.bind(1, static_cast<qint64>(file.sizeBytes));
-                    upd.bind(2, file.mtimeMs);
-                    upd.bind(3, generation);
-                    upd.bind(4, id);
-                    upd.run();
-                    m_db->exec("DELETE FROM jobs WHERE video_id="
-                               + QString::number(id).toUtf8());
+                    updateChanged.reset();
+                    updateChanged.bind(1, static_cast<qint64>(file.sizeBytes));
+                    updateChanged.bind(2, file.mtimeMs);
+                    updateChanged.bind(3, generation);
+                    updateChanged.bind(4, id);
+                    updateChanged.run();
+                    dropJobs.reset();
+                    dropJobs.bind(1, id);
+                    dropJobs.run();
                     // Invalidate extracted data: rows and their owned
                     // artifact files go together (§4, §6).
-                    {
-                        Statement artifacts = m_db->prepare(
-                            "SELECT rel_path FROM cache_entries WHERE video_id=?");
-                        artifacts.bind(1, id);
-                        while (artifacts.step())
-                            QFile::remove(m_cacheDir + QLatin1Char('/')
-                                          + artifacts.text(0));
-                    }
-                    m_db->exec("DELETE FROM cache_entries WHERE video_id="
-                               + QString::number(id).toUtf8());
-                    Statement job = m_db->prepare(
-                        "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
-                        "VALUES(?,?,'probe','queued')");
-                    job.bind(1, id);
-                    job.bind(2, revision + 1);
-                    job.run();
+                    QStringList staleArtifacts;
+                    listArtifacts.reset();
+                    listArtifacts.bind(1, id);
+                    while (listArtifacts.step())
+                        staleArtifacts.append(listArtifacts.text(0));
+                    listArtifacts.reset(); // release the cursor before deleting
+                    for (const QString& stale : staleArtifacts)
+                        QFile::remove(m_cacheDir + QLatin1Char('/') + stale);
+                    dropCache.reset();
+                    dropCache.bind(1, id);
+                    dropCache.run();
+                    ensureProbeJob.reset();
+                    ensureProbeJob.bind(1, id);
+                    ensureProbeJob.bind(2, revision + 1);
+                    ensureProbeJob.run();
                     ++rowsSinceCommit;
                     pendingRows.append(readRow(id));
                     continue;
                 }
 
                 // New file: insert and queue its probe.
-                Statement ins = m_db->prepare(
-                    "INSERT INTO videos(root_id, rel_path, cmp_key, file_name, size_bytes, "
-                    "mtime_ms, revision, views, added_ms, availability, probe_status, "
-                    "seen_generation) VALUES(?,?,?,?,?,?,1,0,?,'unprobed','pending',?)");
-                ins.bind(1, rootId);
-                ins.bind(2, rel);
-                ins.bind(3, cmpKey);
-                ins.bind(4, fileNameOf(file.absolutePath));
-                ins.bind(5, static_cast<qint64>(file.sizeBytes));
-                ins.bind(6, file.mtimeMs);
-                ins.bind(7, now);
-                ins.bind(8, generation);
-                if (!ins.run())
+                insertVideo.reset();
+                insertVideo.bind(1, rootId);
+                insertVideo.bind(2, rel);
+                insertVideo.bind(3, cmpKey);
+                insertVideo.bind(4, fileNameOf(file.absolutePath));
+                insertVideo.bind(5, static_cast<qint64>(file.sizeBytes));
+                insertVideo.bind(6, file.mtimeMs);
+                insertVideo.bind(7, now);
+                insertVideo.bind(8, generation);
+                if (!insertVideo.run())
                     continue;
                 const qint64 id = m_db->lastInsertRowId();
-                Statement job = m_db->prepare(
-                    "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
-                    "VALUES(?,1,'probe','queued')");
-                job.bind(1, id);
-                job.run();
+                insertProbeJob.reset();
+                insertProbeJob.bind(1, id);
+                insertProbeJob.run();
                 ++rowsSinceCommit;
-                pendingRows.append(readRow(id));
+                // Every field of a freshly inserted row is known here; going
+                // back to SQL for it cost a query plus two EXISTS probes per
+                // discovered file on the first scan of a library.
+                VideoRow fresh;
+                fresh.id = id;
+                fresh.rootId = rootId;
+                fresh.relPath = rel;
+                fresh.fileName = fileNameOf(file.absolutePath);
+                fresh.sizeBytes = static_cast<qint64>(file.sizeBytes);
+                fresh.mtimeMs = file.mtimeMs;
+                fresh.revision = 1;
+                fresh.durationMs = -1;
+                fresh.addedMs = now;
+                fresh.availability = QStringLiteral("unprobed");
+                fresh.probeStatus = QStringLiteral("pending");
+                pendingRows.append(fresh);
             }
 
             commitIfDue();
@@ -678,10 +710,13 @@ void Catalogue::dispatchJobs()
         "SELECT j.id, j.video_id, j.revision, j.kind, v.cmp_key, r.path, r.id FROM jobs j "
         "JOIN videos v ON v.id = j.video_id JOIN roots r ON r.id = v.root_id "
         "WHERE j.state='queued' AND j.kind=? ORDER BY j.id LIMIT 1");
-    const qint64 primaryPending = m_db->scalarInt(
-        "SELECT COUNT(*) FROM jobs WHERE kind IN ('probe','poster') "
-        "AND state IN ('queued','running')").value_or(0);
-    if (primaryPending == 0 && !m_sparsePassQueued)
+    // Existence, not a count: this runs after every finished job, and counting
+    // a large queued backlog there cost more than the dispatch itself. Every
+    // use below only asks "is any primary work left?".
+    const bool primaryPending = m_db->scalarInt(
+        "SELECT EXISTS(SELECT 1 FROM jobs WHERE kind IN ('probe','poster') "
+        "AND state IN ('queued','running'))").value_or(0) != 0;
+    if (!primaryPending && !m_sparsePassQueued)
         queueSparsePreviews();
     while (m_activeJobs.size() < m_jobConcurrency) {
         // Priority: posters (visible cards) before remaining probes, and
@@ -712,7 +747,7 @@ void Catalogue::dispatchJobs()
             // Never start the second pass while metadata/posters are pending.
             const auto activePreviews = std::count_if(m_activeJobs.cbegin(), m_activeJobs.cend(),
                 [](const ActiveJob* item) { return item->kind == QLatin1String("storyboard"); });
-            if (primaryPending > 0 || activePreviews >= m_previewConcurrency)
+            if (primaryPending || activePreviews >= m_previewConcurrency)
                 break;
             const qint64 previewBytes = m_db->scalarInt(
                 "SELECT COALESCE(SUM(bytes),0) FROM cache_entries WHERE kind='storyboard'").value_or(0);
@@ -772,7 +807,7 @@ void Catalogue::dispatchJobs()
         }
     }
     emitProgressThrottled(m_scanActive.load() || !m_activeJobs.isEmpty()
-                     ? (primaryPending > 0 ? QStringLiteral("probing") : QStringLiteral("previews"))
+                     ? (primaryPending ? QStringLiteral("probing") : QStringLiteral("previews"))
                      : QStringLiteral("complete"));
 }
 
@@ -1065,6 +1100,10 @@ void Catalogue::applyExtractResult(ActiveJob* job, const ExtractResult& result)
     Statement del = m_db->prepare("DELETE FROM jobs WHERE id=?");
     del.bind(1, job->jobId);
     del.run();
+    if (m_cacheBytes >= 0)
+        m_cacheBytes += bytes;
+    else
+        m_cacheBytes = -1; // unknown; the next check takes the SQL total
     emit cacheEntryChanged(job->videoId, profile);
     emitRows(QList<VideoRow>{readRow(job->videoId)});
     enforceCacheLimit();
@@ -1075,11 +1114,17 @@ void Catalogue::enforceCacheLimit()
     // Evict least-recently-used owned artifacts only; ratings and tags are
     // never touched (§6). LRU access times are per entry, not per mouse move.
     const qint64 limit = settingInt("disk_cache_bytes", m_diskCacheLimit);
-    // One total, decremented as entries are evicted: the SUM query used to be
-    // re-run for every eviction (§6).
-    Statement sum = m_db->prepare("SELECT COALESCE(SUM(bytes),0) FROM cache_entries");
-    sum.step();
-    qint64 total = sum.int64(0);
+    // The running total is maintained by applyExtractResult(), clearPreviews()
+    // and the evictions below; SUM runs once per session instead of once per
+    // completed artifact (§6).
+    if (m_cacheBytes < 0) {
+        Statement sum = m_db->prepare("SELECT COALESCE(SUM(bytes),0) FROM cache_entries");
+        sum.step();
+        m_cacheBytes = sum.int64(0);
+    }
+    if (m_cacheBytes <= limit)
+        return;
+    qint64 total = m_cacheBytes;
     Statement oldest = m_db->prepare(
         "SELECT video_id, profile, rel_path, bytes FROM cache_entries "
         "ORDER BY last_access_ms ASC LIMIT 1");
@@ -1101,6 +1146,7 @@ void Catalogue::enforceCacheLimit()
         del.run();
         total -= bytes;
     }
+    m_cacheBytes = total;
 }
 
 void Catalogue::requestFileInfo(qint64 videoId)
@@ -1349,7 +1395,7 @@ void Catalogue::emitProgressThrottled(const QString& state)
 {
     // §5 counts are for a status line; recomputing them (a full video scan per
     // call) once per dispatched job is what made long scans CPU-bound.
-    constexpr int kProgressIntervalMs = 250;
+    constexpr int kProgressIntervalMs = 1000;
     if (state == m_lastProgressState && m_progressClock.isValid()
         && m_progressClock.elapsed() < kProgressIntervalMs)
         return;

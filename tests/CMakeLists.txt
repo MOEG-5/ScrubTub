@@ -140,6 +140,15 @@ set_tests_properties(filesafety probe catalogue extract preview hoversession sea
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
+# Media-free regression fences for the large-library hot paths (model
+# bookkeeping, fuzzy search). No corpus, no subprocesses.
+add_executable(tst_performance tst_performance.cpp)
+target_link_libraries(tst_performance PRIVATE scrubtub_core Qt6::Test scrubtub_defaults)
+set_target_properties(tst_performance PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_test(NAME performance COMMAND tst_performance)
+set_tests_properties(performance PROPERTIES TIMEOUT 180)
+set_property(TEST performance APPEND PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Media-free regressions for asynchronous paging and folder removal.
 add_executable(tst_catalogueupdates tst_catalogueupdates.cpp)
 target_link_libraries(tst_catalogueupdates PRIVATE scrubtub_core Qt6::Test scrubtub_defaults)

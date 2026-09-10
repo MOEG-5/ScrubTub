@@ -103,6 +103,33 @@ QStringList storyboardArguments(const QString& source, const QString& framesDir,
     return args;
 }
 
+// One sample time, one process, one frame: the pre-batching path. Used only as
+// a fallback when the single batched invocation produced nothing, because
+// ffmpeg aborts the whole run (writing no tiles at all) when any sample lands
+// past the end of the stream — a claimed duration is not proof that a frame
+// exists there. Tagged with showinfo so the delivered timestamp is recorded.
+QStringList singleSampleArguments(const QString& source, const QString& out,
+                                  int streamIndex, double seekSeconds, int targetWidth)
+{
+    QStringList args{QStringLiteral("-v"), QStringLiteral("info"),
+                     QStringLiteral("-nostdin"),
+                     QStringLiteral("-copyts"),
+                     QStringLiteral("-threads"), QStringLiteral("1")};
+    if (seekSeconds > 0)
+        args << QStringLiteral("-ss") << QString::number(seekSeconds, 'f', 3);
+    args << QStringLiteral("-i") << source
+         << QStringLiteral("-map") << QStringLiteral("0:%1").arg(streamIndex)
+         << QStringLiteral("-an") << QStringLiteral("-sn")
+         << QStringLiteral("-frames:v") << QStringLiteral("1")
+         << QStringLiteral("-vf")
+         << QStringLiteral("scale=%1:%1:force_original_aspect_ratio=decrease:force_divisible_by=2,showinfo").arg(targetWidth)
+         << QStringLiteral("-filter_threads") << QStringLiteral("1")
+         << QStringLiteral("-threads") << QStringLiteral("1")
+         << QStringLiteral("-f") << QStringLiteral("image2")
+         << QStringLiteral("-y") << out;
+    return args;
+}
+
 // Runs a process with the shared hard-timeout behavior; returns false on
 // timeout or cancellation. Output bound by kMaxLogBytes.
 bool runBounded(const QString& program, const QStringList& args, int timeoutMs,
@@ -282,7 +309,7 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     // so half the cores per process keeps the machine busy without
     // oversubscribing it (§5).
     const int threads = std::clamp(QThread::idealThreadCount() / 2, 2, 8);
-    const bool ok = runBounded(request.ffmpegPath,
+    bool ok = runBounded(request.ffmpegPath,
                                storyboardArguments(request.sourcePath, framesDir,
                                                    request.selectedStreamIndex, plan,
                                                    request.tileWidth, threads),
@@ -292,10 +319,62 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     // Tiles that actually reached disk. A sample ffmpeg could not produce is
     // skipped and the earlier ones still compose a usable partial atlas (§6).
     QVector<int> produced;
-    for (int i = 0; i < plan.size(); ++i) {
-        if (completeTile(samplePath(framesDir, i)))
+    const auto collectProduced = [&] {
+        produced.clear();
+        for (int i = 0; i < plan.size(); ++i)
+            if (completeTile(samplePath(framesDir, i)))
+                produced.append(i);
+    };
+    collectProduced();
+
+    // The batch produced nothing at all, but the job was neither cancelled nor
+    // timed out: fall back to one process per sample. That happens when a
+    // sample time lies past the last frame (the claimed duration can exceed
+    // the real stream), where ffmpeg discards every output of the batched run.
+    // The fallback keeps the samples that do exist, exactly as before the
+    // batching change; healthy media never takes this path.
+    QVector<qint64> fallbackTimes;
+    if (produced.isEmpty() && !timedOut && !(cancelled && cancelled->load())) {
+        for (int i = 0; i < plan.size(); ++i) {
+            if (cancelled && cancelled->load())
+                break;
+            const QString framePath = samplePath(framesDir, i);
+            QFile::remove(framePath);
+            bool sampleTimedOut = false;
+            QByteArray sampleErr;
+            const bool sampleOk = runBounded(
+                request.ffmpegPath,
+                singleSampleArguments(request.sourcePath, framePath,
+                                      request.selectedStreamIndex, plan.at(i) / 1000.0,
+                                      request.tileWidth),
+                request.timeoutMs, nullptr, &sampleErr, &sampleTimedOut,
+                pidSink, cancelled);
+            if (sampleTimedOut) {
+                result.timedOut = true;
+                result.error = QStringLiteral("storyboard sample %1 timed out").arg(i);
+                break;
+            }
+            if (!sampleOk || !completeTile(framePath)) {
+                // A failure at one timestamp may leave a partial usable
+                // storyboard: stop expanding but keep the collected samples.
+                if (sampleOk)
+                    QFile::remove(framePath);
+                result.error = QStringLiteral("storyboard stopped at sample %1: %2")
+                                   .arg(i)
+                                   .arg(QString::fromUtf8(sampleErr.left(300)));
+                break;
+            }
+            const QVector<qint64> pts = deliveredPtsMs(sampleErr);
+            fallbackTimes.append(pts.isEmpty() ? plan.at(i) : pts.last());
             produced.append(i);
+        }
+        if (!produced.isEmpty()) {
+            // The fallback owns the timestamps; the batched log is unusable.
+            stdErr.clear();
+            ok = false;
+        }
     }
+
     int firstMissing = plan.size();
     for (int i = 0; i < plan.size(); ++i) {
         if (i >= produced.size() || produced.at(i) != i) {
@@ -327,8 +406,9 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     // to the requested times rather than mis-assigning actual ones.
     QVector<qint64> delivered = deliveredPtsMs(stdErr);
     std::sort(delivered.begin(), delivered.end());
-    const bool timesAvailable = delivered.size() == produced.size();
-
+    const bool timesAvailable = !fallbackTimes.isEmpty()
+        ? fallbackTimes.size() == produced.size()
+        : delivered.size() == produced.size();
     QVector<qint64> times;
     QVector<QImage> tiles;
     times.reserve(produced.size());
@@ -339,7 +419,10 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
         if (tile.isNull())
             continue; // unreadable tile: drop it with its timestamp
         tiles.append(tile);
-        times.append(timesAvailable ? delivered.at(j) : plan.at(i));
+        if (timesAvailable)
+            times.append(fallbackTimes.isEmpty() ? delivered.at(j) : fallbackTimes.at(j));
+        else
+            times.append(plan.at(i));
     }
     if (tiles.isEmpty()) {
         result.error = QStringLiteral("storyboard tiles unreadable");

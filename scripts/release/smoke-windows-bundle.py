@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='scrubtub-release-smoke-') as temporary:
     env = os.environ.copy()
     for key in ('QT_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QML_IMPORT_PATH'):
         env.pop(key, None)
-    env.update(PATH=str(Path(env['SystemRoot']) / 'System32'),
+    env.update(PATH=str(Path(os.environ['SystemRoot']) / 'System32'),
                QT_QPA_PLATFORM='windows', QT_QUICK_BACKEND='software',
                APPDATA=str(profile / 'roaming'), LOCALAPPDATA=str(profile / 'local'))
     with (profile / 'app.log').open('w+') as log:

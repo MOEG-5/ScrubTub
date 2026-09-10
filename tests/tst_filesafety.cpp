@@ -2,10 +2,10 @@
 // Copyright (C) 2026 the scrubtub authors.
 // File-safety contract checks (TECH_SPEC.md sections 3 and 12, milestone 0).
 //
-// Every test operates on a freshly created disposable corpus in a temporary
-// directory with a fresh application profile. The supplied original fixture is
-// only ever read and verified unchanged at the end of the suite.
-#include <QCryptographicHash>
+// The scanner never decodes media, so the controlled-name cases build their
+// own disposable corpora from trivial files; sizes and mtimes are still the
+// real stat values. The repository's vids/ corpus is scanned directly, as-is
+// (AGENTS.md), and proven byte-identical afterwards with vidsFingerprint().
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -19,11 +19,8 @@
 #include "app/ProfilePaths.h"
 #include "catalogue/SourceScanner.h"
 #include "testsupport/FixtureCorpus.h"
+#include "testsupport/MediaFixtures.h"
 #include "testsupport/TreeSnapshot.h"
-
-#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
-#include <cstdlib>
-#endif
 
 using namespace scrubtub;
 
@@ -40,17 +37,12 @@ private slots:
     void scannerRejectsSymlinkedRoot();
     void noWritesDuringScan();
     void snapshotHarnessDetectsChanges();
+    void scansRealCorpusAsIs();
 
 private:
-    bool makeCorpus(testsupport::FixtureCorpus** out, QString* error);
-    QString originalFixture() const;
-    bool fixtureHash(QString* statDesc, QByteArray* sha256Out) const;
-
     QTemporaryDir m_profileBase;
     QTemporaryDir m_corpusBase;
-    QString m_originalFixture;
-    QString m_originalFixtureStat;
-    QByteArray m_originalFixtureHash;
+    QString m_vidsFingerprint;
 };
 
 void TestFileSafety::initTestCase()
@@ -64,73 +56,19 @@ void TestFileSafety::initTestCase()
     qputenv("XDG_CACHE_HOME", m_profileBase.filePath(QStringLiteral("cache")).toUtf8());
     qputenv("XDG_CONFIG_HOME", m_profileBase.filePath(QStringLiteral("config")).toUtf8());
 
-#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
-    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
-    m_originalFixture = env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
-                                      : QString::fromLocal8Bit(env);
-#endif
-    if (m_originalFixture.isEmpty() || !QFileInfo::exists(m_originalFixture))
-        qInfo("No source fixture available; media-dependent tests will skip. "
-              "Set SCRUBTUB_TEST_SOURCE_VIDEO to enable them.");
-    else
-        QVERIFY(fixtureHash(&m_originalFixtureStat, &m_originalFixtureHash));
+    // Fingerprint the read-only corpus up front; cleanupTestCase proves the
+    // whole suite left it untouched.
+    m_vidsFingerprint = testsupport::vidsFingerprint();
+    if (!testsupport::vidsAvailable())
+        qInfo("Real video corpus unavailable; the as-is corpus scan will skip. "
+              "Set SCRUBTUB_TEST_VIDS_DIR to enable it.");
 }
 
 void TestFileSafety::cleanupTestCase()
 {
-    // The original fixture must be byte- and metadata-identical after the suite.
-    if (m_originalFixture.isEmpty())
-        return;
-    QString statNow;
-    QByteArray hash;
-    QVERIFY2(fixtureHash(&statNow, &hash), "Original fixture must stay readable");
-    QCOMPARE(hash, m_originalFixtureHash);
-    QCOMPARE(statNow, m_originalFixtureStat);
-}
-
-QString TestFileSafety::originalFixture() const
-{
-    return m_originalFixture;
-}
-
-bool TestFileSafety::fixtureHash(QString* statDesc, QByteArray* sha256Out) const
-{
-    QFileInfo info(m_originalFixture);
-    *statDesc = QStringLiteral("%1|%2|%3")
-                    .arg(info.size())
-                    .arg(info.lastModified().toMSecsSinceEpoch())
-                    .arg(info.metadataChangeTime().toMSecsSinceEpoch());
-    if (sha256Out) {
-        QFile file(m_originalFixture);
-        if (!file.open(QIODevice::ReadOnly))
-            return false;
-        QCryptographicHash hash(QCryptographicHash::Sha256);
-        char buffer[128 * 1024];
-        while (!file.atEnd()) {
-            const qint64 read = file.read(buffer, sizeof(buffer));
-            if (read <= 0)
-                return false;
-            hash.addData(QByteArrayView(buffer, static_cast<int>(read)));
-        }
-        *sha256Out = hash.result().toHex();
-    }
-    return true;
-}
-
-bool TestFileSafety::makeCorpus(testsupport::FixtureCorpus** out, QString* error)
-{
-    static int counter = 0;
-    auto corpus = std::make_unique<testsupport::FixtureCorpus>(
-        m_corpusBase.filePath(QStringLiteral("corpus%1").arg(++counter)));
-
-    if (originalFixture().isEmpty()) {
-        *error = QStringLiteral("source fixture unavailable");
-        return false;
-    }
-    if (!corpus->addCopyOfMedia(originalFixture(), QStringLiteral("Summer_Trip-2024_1080p.mp4"), error))
-        return false;
-    *out = corpus.release();
-    return true;
+    // The whole run, including the as-is corpus scan, must leave vids/ exactly
+    // as it was (names, sizes, mtimes).
+    QCOMPARE(testsupport::vidsFingerprint(), m_vidsFingerprint);
 }
 
 void TestFileSafety::profileDirsAreAppOwned()
@@ -177,33 +115,31 @@ void TestFileSafety::renamedAppReusesLegacyProfile()
 
 void TestFileSafety::scannerFindsAndSkipsCorrectly()
 {
+    // Controlled names, hidden directory and odd characters. The scanner never
+    // decodes media, so trivial files are enough; sizes and mtimes are real.
     testsupport::FixtureCorpus corpus(m_corpusBase.filePath(QStringLiteral("corpus-names")));
     QString error;
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(),
-                                   QStringLiteral("Summer_Trip-2024_1080p.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("Summer_Trip-2024_1080p.mp4"),
+                                QByteArray(4001, 'a'), &error),
              qUtf8Printable(error));
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(),
-                                   QStringLiteral("summer.trip.final.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("summer.trip.final.mp4"),
+                                QByteArray(1234, 'b'), &error),
              qUtf8Printable(error));
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(),
-                                   QStringLiteral("Café 東京 01.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("Café 東京 01.mp4"), QByteArray(777, 'c'),
+                                &error),
              qUtf8Printable(error));
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(),
-                                   QStringLiteral("odd'name;&|$()!.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("odd'name;&|$()!.mp4"), QByteArray(99, 'd'),
+                                &error),
              qUtf8Printable(error));
-    QVERIFY(corpus.mkdir(QStringLiteral("Travel/Japan")));
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(),
-                                   QStringLiteral("Travel/Japan/Summer_Trip.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("Travel/Japan/Summer_Trip.mp4"),
+                                QByteArray(3210, 'e'), &error),
              qUtf8Printable(error));
-    QVERIFY(corpus.addTextFile(QStringLiteral("notes.txt"), QByteArrayLiteral("not a video\n"),
-                               &error));
-    QVERIFY(corpus.mkdir(QStringLiteral(".hiddendir")));
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(),
-                                   QStringLiteral(".hiddendir/secret.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("notes.txt"), QByteArrayLiteral("not a video\n"),
+                                &error),
              qUtf8Printable(error));
-
-    if (originalFixture().isEmpty())
-        QSKIP("Source fixture unavailable");
+    QVERIFY2(corpus.addTextFile(QStringLiteral(".hiddendir/secret.mp4"), QByteArray(555, 'f'),
+                                &error),
+             qUtf8Printable(error));
 
     DiscoveryOptions options;
     options.rootPath = corpus.root();
@@ -212,15 +148,20 @@ void TestFileSafety::scannerFindsAndSkipsCorrectly()
     const DiscoveryResult result = SourceScanner::enumerateRoot(options, cancel);
     QVERIFY(result.rootAccepted);
     QVERIFY(result.completed);
-    QCOMPARE(result.files.size(), 5); // hidden directory excluded by default
+    QCOMPARE(int(result.files.size()), 5); // hidden directory excluded by default
     QVERIFY(result.issues.isEmpty());
 
     QStringList found;
     for (const DiscoveredFile& file : result.files) {
-        found << QDir(corpus.root()).relativeFilePath(file.absolutePath);
+        const QString relative = QDir(corpus.root()).relativeFilePath(file.absolutePath);
+        found << relative;
         QVERIFY(file.absolutePath.startsWith(corpus.root()));
-        QVERIFY(file.sizeBytes > 0);
+        const QFileInfo info(file.absolutePath);
+        QVERIFY(info.isFile());
+        // Real stat values survive the scan.
+        QCOMPARE(qint64(file.sizeBytes), info.size());
         QVERIFY(file.mtimeMs > 0);
+        QVERIFY(qAbs(file.mtimeMs - info.lastModified().toMSecsSinceEpoch()) <= 1);
     }
     found.sort();
     QCOMPARE(found, (QStringList{QStringLiteral("Café 東京 01.mp4"),
@@ -232,17 +173,19 @@ void TestFileSafety::scannerFindsAndSkipsCorrectly()
     DiscoveryOptions includeHidden = options;
     includeHidden.includeHidden = true;
     const DiscoveryResult hiddenResult = SourceScanner::enumerateRoot(includeHidden, cancel);
-    QCOMPARE(hiddenResult.files.size(), 6);
+    QCOMPARE(int(hiddenResult.files.size()), 6);
+    QStringList hiddenFound;
+    for (const DiscoveredFile& file : hiddenResult.files)
+        hiddenFound << QDir(corpus.root()).relativeFilePath(file.absolutePath);
+    QVERIFY2(hiddenFound.contains(QStringLiteral(".hiddendir/secret.mp4")),
+             "includeHidden must discover the hidden directory");
 }
 
 void TestFileSafety::scannerRejectsSymlinkedRoot()
 {
-    if (originalFixture().isEmpty())
-        QSKIP("Source fixture unavailable");
-
     testsupport::FixtureCorpus corpus(m_corpusBase.filePath(QStringLiteral("corpus-symlink")));
     QString error;
-    QVERIFY2(corpus.addCopyOfMedia(originalFixture(), QStringLiteral("video.mp4"), &error),
+    QVERIFY2(corpus.addTextFile(QStringLiteral("video.mp4"), QByteArray(2048, 'v'), &error),
              qUtf8Printable(error));
 
     const QString link = m_corpusBase.filePath(QStringLiteral("root-link"));
@@ -263,11 +206,16 @@ void TestFileSafety::scannerRejectsSymlinkedRoot()
 
 void TestFileSafety::noWritesDuringScan()
 {
-    testsupport::FixtureCorpus* corpus = nullptr;
+    testsupport::FixtureCorpus corpus(m_corpusBase.filePath(QStringLiteral("corpus-writes")));
     QString error;
-    QVERIFY2(makeCorpus(&corpus, &error), qUtf8Printable(error));
-    std::unique_ptr<testsupport::FixtureCorpus> guard(corpus);
-    QVERIFY(corpus->addTextFile(QStringLiteral("notes.txt"), QByteArrayLiteral("metadata probe\n"), &error));
+    QVERIFY2(corpus.addTextFile(QStringLiteral("clip-one.mp4"), QByteArray(1500, '1'), &error),
+             qUtf8Printable(error));
+    QVERIFY2(corpus.addTextFile(QStringLiteral("nested/clip-two.mkv"), QByteArray(2500, '2'),
+                                &error),
+             qUtf8Printable(error));
+    QVERIFY2(corpus.addTextFile(QStringLiteral("notes.txt"),
+                                QByteArrayLiteral("metadata probe\n"), &error),
+             qUtf8Printable(error));
 
     const std::atomic_bool cancel = false;
 
@@ -277,11 +225,11 @@ void TestFileSafety::noWritesDuringScan()
 
     for (int pass = 0; pass < 2; ++pass) {
         DiscoveryOptions options;
-        options.rootPath = corpus->root();
+        options.rootPath = corpus.root();
         options.includeHidden = pass == 1;
         QString snapshotError;
         testsupport::TreeSnapshot before;
-        QVERIFY2(testsupport::snapshotTree(corpus->root(), &before, &snapshotError),
+        QVERIFY2(testsupport::snapshotTree(corpus.root(), &before, &snapshotError),
                  qUtf8Printable(snapshotError));
 
         const DiscoveryResult result = SourceScanner::enumerateRoot(options, cancel);
@@ -304,7 +252,7 @@ void TestFileSafety::noWritesDuringScan()
         QVERIFY(!stopped.completed); // cancelled mid-run must not claim completion
 
         testsupport::TreeSnapshot after;
-        QVERIFY2(testsupport::snapshotTree(corpus->root(), &after, &snapshotError),
+        QVERIFY2(testsupport::snapshotTree(corpus.root(), &after, &snapshotError),
                  qUtf8Printable(snapshotError));
         const QStringList diffs = testsupport::diffTrees(before, after);
         if (!diffs.isEmpty()) {
@@ -336,6 +284,56 @@ void TestFileSafety::snapshotHarnessDetectsChanges()
     const QStringList diffs = testsupport::diffTrees(before, after);
     QVERIFY2(!diffs.isEmpty(), "Harness must detect a deliberate change");
     QVERIFY(diffs.join(QLatin1Char(';')).contains(QStringLiteral("mutable.txt")));
+}
+
+// The real corpus is scanned directly and only read. Every supported file the
+// helper reports must be discovered, and the folder must stay byte-identical.
+void TestFileSafety::scansRealCorpusAsIs()
+{
+    if (!testsupport::vidsAvailable())
+        QSKIP("Real video corpus unavailable; set SCRUBTUB_TEST_VIDS_DIR to scan it as-is");
+
+    const QString rootPath = testsupport::vidsDir();
+    QVERIFY(!rootPath.isEmpty());
+    const QString fingerprintBefore = testsupport::vidsFingerprint();
+    QVERIFY2(fingerprintBefore != QStringLiteral("unavailable"),
+             "corpus fingerprint must be computable");
+
+    DiscoveryOptions options;
+    options.rootPath = rootPath;
+    const std::atomic_bool cancel = false;
+    const DiscoveryResult result = SourceScanner::enumerateRoot(options, cancel);
+    QVERIFY2(result.rootAccepted, "Real corpus root must be accepted");
+    QVERIFY2(result.completed, "Real corpus scan must complete");
+
+    // Expected set: the helper's top-level listing filtered by the scanner's
+    // own extension list. vidsFiles() is non-recursive by contract.
+    QStringList expected;
+    for (const QString& name : testsupport::vidsFiles()) {
+        if (options.extensions.contains(QFileInfo(name).suffix().toLower()))
+            expected << name;
+    }
+    expected.sort();
+    QVERIFY2(!expected.isEmpty(), "Real corpus contains no supported video files");
+
+    QStringList discoveredTopLevel;
+    for (const DiscoveredFile& file : result.files) {
+        QVERIFY2(file.absolutePath.startsWith(rootPath + QLatin1Char('/')),
+                 qUtf8Printable(QStringLiteral("Discovered path outside the corpus: %1")
+                                    .arg(file.absolutePath)));
+        QVERIFY2(options.extensions.contains(QFileInfo(file.absolutePath).suffix().toLower()),
+                 qUtf8Printable(QStringLiteral("Scanner returned an unsupported file: %1")
+                                    .arg(file.absolutePath)));
+        QCOMPARE(qint64(file.sizeBytes), QFileInfo(file.absolutePath).size());
+        const QString relative = file.absolutePath.mid(rootPath.size() + 1);
+        if (!relative.contains(QLatin1Char('/')))
+            discoveredTopLevel << relative;
+    }
+    discoveredTopLevel.sort();
+    QCOMPARE(discoveredTopLevel, expected);
+
+    // Read-only proof around the scan itself.
+    QCOMPARE(testsupport::vidsFingerprint(), fingerprintBefore);
 }
 
 QTEST_GUILESS_MAIN(TestFileSafety)

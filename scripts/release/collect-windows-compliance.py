@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import urllib.request
 
 
@@ -85,6 +86,14 @@ def main():
         if component is None:
             raise RuntimeError(f'Unmapped runtime file: {relative}')
         records.append(dict(file=relative, component=component, sha256=identity))
+    # Restored MSYS2 installations may carry a keyring owned by another runner.
+    # Initialize a disposable keyring with MSYS2's packaged master/packager keys
+    # and revocation policy, without changing the installation's keyring.
+    key_home = tempfile.TemporaryDirectory(prefix='scrubtub-source-keyring-', ignore_cleanup_errors=True)
+    unix_key_home = subprocess.check_output([str(msys / 'usr/bin/cygpath.exe'), '-u', key_home.name], text=True).strip()
+    bash = str(msys / 'usr/bin/bash.exe')
+    subprocess.run([bash, '-c', 'pacman-key --gpgdir "$1" --init && pacman-key --gpgdir "$1" --populate msys2',
+                    '--', unix_key_home], check=True)
     components = {}
     for package in sorted(packages):
         fields = metadata[package]
@@ -101,7 +110,8 @@ def main():
             urllib.request.urlretrieve(url + '.sig', signature)
         unix_sig = subprocess.check_output(['cygpath', '-u', str(signature)], text=True).strip()
         unix_source = subprocess.check_output(['cygpath', '-u', str(target)], text=True).strip()
-        subprocess.run([str(msys / 'usr/bin/bash.exe'), '-c', 'pacman-key --verify "$1" "$2"', '--', unix_sig, unix_source], check=True)
+        subprocess.run([bash, '-c', 'pacman-key --gpgdir "$1" --verify "$2" "$3"',
+                        '--', unix_key_home, unix_sig, unix_source], check=True)
         # Keep all package-provided license/copyright files. Fail if none exist.
         notice = notices / package
         notice.mkdir(exist_ok=True)

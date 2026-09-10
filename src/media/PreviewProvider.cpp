@@ -3,7 +3,11 @@
 #include "PreviewProvider.h"
 
 #include <QImage>
+#include <QImageReader>
 #include <QQuickTextureFactory>
+#include <QThread>
+
+#include <algorithm>
 
 namespace scrubtub {
 
@@ -31,7 +35,10 @@ QQuickImageResponse* PreviewProvider::requestImageResponse(const QString& id,
     static QThreadPool* providerPool = nullptr;
     if (!providerPool) {
         providerPool = new QThreadPool();
-        providerPool->setMaxThreadCount(2); // image decode budget (§6)
+        // Image decode budget (§6): scale with the machine, bounded so many
+        // queued card thumbnails cannot swamp the cores.
+        providerPool->setMaxThreadCount(
+            std::clamp(QThread::idealThreadCount() / 2, 2, 8));
     }
     auto* response = new PreviewResponse(providerPool, path, requestedSize);
     response->start();
@@ -62,16 +69,32 @@ void PreviewResponse::run()
         return;
     }
     if (!m_path.isEmpty()) {
-        QImage image(m_path);
-        if (!image.isNull()) {
-            // Bound decoded RAM: scale to the requested card size (§6).
-            if (!m_requestedSize.isEmpty()
+        // Decode at the requested card size instead of decoding the full
+        // artifact and scaling afterwards (§6: bound decoded RAM).
+        QImage image;
+        // autoTransform is left at its default (off): QImage(path) does not
+        // apply EXIF orientation in Qt 6, so the delivered pixels stay byte
+        // for byte what the previous full-decode path produced.
+        QImageReader reader(m_path);
+        const QSize source = reader.size();
+        if (!m_requestedSize.isEmpty() && source.isValid() && !source.isEmpty()
+            && source.width() > m_requestedSize.width()) {
+            QSize target = source;
+            target.scale(m_requestedSize, Qt::KeepAspectRatio);
+            reader.setScaledSize(target);
+            image = reader.read();
+        }
+        if (image.isNull()) {
+            // No usable header size, an unreadable format, or nothing to
+            // shrink: decode in full and apply the width-bound scale.
+            image = QImage(m_path);
+            if (!image.isNull() && !m_requestedSize.isEmpty()
                 && image.width() > m_requestedSize.width()) {
                 image = image.scaledToWidth(m_requestedSize.width(),
                                             Qt::SmoothTransformation);
             }
-            m_image = std::move(image);
         }
+        m_image = std::move(image);
     }
     QMetaObject::invokeMethod(this, [this] { emit finished(); },
                               Qt::QueuedConnection);

@@ -5,36 +5,50 @@
 // permanent-delete fallback, backup/restore preserving all annotations,
 // schema and integrity validation, and cache controls limited to owned
 // artifacts.
+//
+// Media rules (AGENTS.md): the mutation cases use synthetic ORIGINAL clips
+// under the test profile so nothing here can touch the owner's library, and
+// they live on the same filesystem as the redirected XDG data dir so the
+// platform Trash facility works. The repository's vids/ corpus is only ever
+// read as-is; the read-only case proves it via vidsFingerprint().
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
 #include <QSignalSpy>
-#include <QUrl>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QtTest>
 
 #include "catalogue/Catalogue.h"
 #include "catalogue/CatalogueModel.h"
 #include "catalogue/Database.h"
-#include "testsupport/FixtureCorpus.h"
+#include "testsupport/MediaFixtures.h"
 
 #include <memory>
 
 using namespace scrubtub;
 
-#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
-static QString fixturePath()
+namespace {
+
+// Short but long enough for a probe, a poster and a storyboard pass.
+constexpr int kSyntheticDurationMs = 1000;
+
+QString syntheticCorpusDir(const QString& name)
 {
-    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
-    return env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
-                         : QString::fromLocal8Bit(env);
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        + QStringLiteral("/corpora/") + name;
 }
-#endif
+
+} // namespace
 
 class TestFileOps : public QObject {
     Q_OBJECT
 
 private slots:
     void initTestCase();
+    void cleanupTestCase();
 
     void addRootFromFileUrlWithSpecialCharacters();
     void authorizedTrashRemovesOnlyTheSelection();
@@ -45,12 +59,14 @@ private slots:
     void restoreRejectsCorruptBackup();
     void clearPreviewsKeepsAnnotations();
     void sizeFormattingUsesIecUnits();
+    void realCorpusSmallestVideoStaysReadOnly();
 
 private:
     bool makeCatalogue(const QString& name);
     qint64 idForName(const QString& name) const;
     void drain();
     qint64 jobCount(const char* state) const;
+    QString trashDir() const;
 
     QTemporaryDir m_profileBase;
     QString m_ffprobe;
@@ -59,27 +75,40 @@ private:
     CatalogueModel m_model;
     QString m_corpusRoot;
     QString m_currentProfile;
+    QString m_vidsFingerprint;
 };
 
 void TestFileOps::initTestCase()
 {
-    // Tracked corpora live in the home filesystem so the Trash tests exercise
-    // the real platform facility; everything is removed at suite end.
-    connect(this, &TestFileOps::destroyed, [] {
-        QDir(testsupport::FixtureCorpus::defaultBaseDir()).removeRecursively();
-    });
+    // Every artifact lives under this temporary profile: the database, the
+    // cache, and the synthetic corpora. The owner's real profile is untouched.
+    QVERIFY(m_profileBase.isValid());
     qputenv("XDG_DATA_HOME", m_profileBase.filePath(QStringLiteral("data")).toUtf8());
     qputenv("XDG_CACHE_HOME", m_profileBase.filePath(QStringLiteral("cache")).toUtf8());
     qputenv("XDG_CONFIG_HOME", m_profileBase.filePath(QStringLiteral("config")).toUtf8());
     m_ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
     m_ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-    QVERIFY(!m_ffprobe.isEmpty() && !m_ffmpeg.isEmpty());
-#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
-    if (fixturePath().isEmpty() || !QFileInfo::exists(fixturePath()))
-        QSKIP("Source fixture unavailable");
-#else
-    QSKIP("No fixture compiled in");
-#endif
+    QVERIFY2(!m_ffprobe.isEmpty() && !m_ffmpeg.isEmpty(),
+             "ffprobe and ffmpeg are required to synthesize test media");
+    m_vidsFingerprint = testsupport::vidsFingerprint();
+    if (!testsupport::vidsAvailable())
+        qInfo("Real video corpus unavailable; the read-only corpus case will skip. "
+              "Set SCRUBTUB_TEST_VIDS_DIR to enable it.");
+}
+
+void TestFileOps::cleanupTestCase()
+{
+    // The Trash directory this run created belongs to this run. It lives under
+    // the redirected XDG data home, so nothing outside the temp profile goes.
+    QDir(trashDir()).removeRecursively();
+
+    // No case may have written to the read-only corpus.
+    QCOMPARE(testsupport::vidsFingerprint(), m_vidsFingerprint);
+}
+
+QString TestFileOps::trashDir() const
+{
+    return m_profileBase.filePath(QStringLiteral("data/Trash"));
 }
 
 bool TestFileOps::makeCatalogue(const QString& name)
@@ -93,15 +122,14 @@ bool TestFileOps::makeCatalogue(const QString& name)
     connect(m_cat.get(), &Catalogue::rowsChanged, &m_model, &CatalogueModel::applyRows,
             Qt::DirectConnection);
 
-    // On the same filesystem as the redirected XDG data dir, so the
-    // platform Trash fallback location works for the mutation tests.
-    testsupport::FixtureCorpus corpus(
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-        + QStringLiteral("/corpora/") + name);
-    m_corpusRoot = corpus.root();
-    if (!corpus.addCopyOfMedia(fixturePath(), QStringLiteral("video_a.mp4"), &error))
-        return false;
-    if (!corpus.addCopyOfMedia(fixturePath(), QStringLiteral("video_b.mp4"), &error))
+    // Synthetic ORIGINALS (never derived from vids/) on the same filesystem as
+    // the redirected XDG data dir, so the platform Trash facility works for
+    // the mutation cases.
+    m_corpusRoot = syntheticCorpusDir(name);
+    if (!testsupport::makeSyntheticVideos(
+            m_corpusRoot,
+            {QStringLiteral("video_a.mp4"), QStringLiteral("video_b.mp4")},
+            kSyntheticDurationMs, &error))
         return false;
 
     QSignalSpy progress(m_cat.get(), &Catalogue::scanProgress);
@@ -152,20 +180,20 @@ qint64 TestFileOps::idForName(const QString& name) const
 void TestFileOps::addRootFromFileUrlWithSpecialCharacters()
 {
     QVERIFY(makeCatalogue(QStringLiteral("urlroots")));
-    testsupport::FixtureCorpus corpus(
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-        + QStringLiteral("/corpora/[SubsPlease] Kanojo, Okarishimasu (01-12) (1080p) [Batch]"));
     QString error;
-    QVERIFY2(corpus.addCopyOfMedia(fixturePath(), QStringLiteral("episode 01.mp4"), &error),
+    const QString bracketedRoot = syntheticCorpusDir(
+        QStringLiteral("[SubsPlease] Kanojo, Okarishimasu (01-12) (1080p) [Batch]"));
+    QVERIFY2(testsupport::makeSyntheticVideo(
+                 bracketedRoot, QStringLiteral("episode 01.mp4"), kSyntheticDurationMs, &error),
              qUtf8Printable(error));
-    QVERIFY(corpus.mkdir(QStringLiteral("Season 1/[Group] Name (2024)")));
-    QVERIFY2(corpus.addCopyOfMedia(fixturePath(),
-                                   QStringLiteral("Season 1/[Group] Name (2024)/episode 02.mp4"),
-                                   &error),
+    const QString seasonDir = bracketedRoot + QStringLiteral("/Season 1/[Group] Name (2024)");
+    QVERIFY(QDir().mkpath(seasonDir));
+    QVERIFY2(testsupport::makeSyntheticVideo(
+                 seasonDir, QStringLiteral("episode 02.mp4"), kSyntheticDurationMs, &error),
              qUtf8Printable(error));
 
     // Exactly what FolderDialog.selectedFolder produces.
-    const QString url = QUrl::fromLocalFile(corpus.root() + QLatin1Char('/')).toString();
+    const QString url = QUrl::fromLocalFile(bracketedRoot + QLatin1Char('/')).toString();
     QVERIFY2(url.contains(QStringLiteral("%5BSubsPlease%5D")),
              "test setup expected a percent-encoded URL");
     QVERIFY2(url.startsWith(QStringLiteral("file://")), "expected a file:// URL");
@@ -218,9 +246,11 @@ void TestFileOps::authorizedTrashRemovesOnlyTheSelection()
     // The selected file left its directory; the sibling is untouched.
     QVERIFY(!QFile::exists(m_corpusRoot + QStringLiteral("/video_a.mp4")));
     QVERIFY(QFile::exists(m_corpusRoot + QStringLiteral("/video_b.mp4")));
+    // The file went to the platform Trash, not to a permanent delete.
+    QVERIFY(QDir(trashDir()).exists());
+    QVERIFY(!QDir(trashDir() + QStringLiteral("/files")).entryList(QDir::Files).isEmpty());
     // The entry remains with annotations, reported missing (§3).
     QTest::qWait(100);
-    const QModelIndex idx = m_model.index(0, 0);
     bool found = false;
     for (int i = 0; i < m_model.rowCount(); ++i) {
         const QModelIndex row = m_model.index(i, 0);
@@ -381,13 +411,17 @@ void TestFileOps::clearPreviewsKeepsAnnotations()
 
     QSignalSpy usage(m_cat.get(), &Catalogue::cacheUsageReady);
     m_cat->clearPreviews();
-    QTest::qWait(200);
 
+    // clearPreviews() drops every entry synchronously. The poster jobs it
+    // re-queues for the next pass must not have run yet, so the check happens
+    // before spinning the event loop.
     {
         Statement st = db.prepare("SELECT COUNT(*) FROM cache_entries");
         QVERIFY(st.step());
         QCOMPARE(st.int64(0), 0);
     }
+    QVERIFY(usage.size() >= 1);
+
     // Ratings survive; only owned artifacts were removed (§6).
     m_cat->refreshRows();
     QTest::qWait(100);
@@ -398,7 +432,6 @@ void TestFileOps::clearPreviewsKeepsAnnotations()
             ratingKept = row.data(CatalogueModel::RatingRole).toInt() == 2;
     }
     QVERIFY2(ratingKept, "clear previews must not touch ratings");
-    QVERIFY(usage.size() >= 1);
 }
 
 // §1: IEC units with the correct factor (user-reported GiB/MiB mislabel).
@@ -412,6 +445,31 @@ void TestFileOps::sizeFormattingUsesIecUnits()
              QStringLiteral("2.00 GiB"));
     QCOMPARE(formatIecBytes(512 * 1024 * 1024), QStringLiteral("512.0 MiB"));
     QCOMPARE(formatIecBytes(-1), QStringLiteral("?"));
+}
+
+// The repository's vids/ corpus is used as-is: a real, already-existing clip
+// is decoded read-only and the whole folder must stay byte-identical.
+void TestFileOps::realCorpusSmallestVideoStaysReadOnly()
+{
+    if (!testsupport::vidsAvailable())
+        QSKIP("Real video corpus unavailable; set SCRUBTUB_TEST_VIDS_DIR to scan it as-is");
+
+    const QString video = testsupport::smallestVideo();
+    QVERIFY2(!video.isEmpty(), "corpus advertises media but has no video file");
+    const QString before = testsupport::vidsFingerprint();
+    QVERIFY2(before != QStringLiteral("unavailable"), "corpus fingerprint must be computable");
+
+    QProcess decode;
+    decode.start(m_ffmpeg, {QStringLiteral("-v"), QStringLiteral("error"),
+                            QStringLiteral("-nostdin"), QStringLiteral("-i"), video,
+                            QStringLiteral("-frames:v"), QStringLiteral("1"),
+                            QStringLiteral("-f"), QStringLiteral("null"), QStringLiteral("-")});
+    QVERIFY2(decode.waitForStarted(10000), "ffmpeg did not start");
+    QVERIFY2(decode.waitForFinished(120000), "decoding the corpus video timed out");
+    QCOMPARE(decode.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(decode.exitCode(), 0);
+
+    QCOMPARE(testsupport::vidsFingerprint(), before);
 }
 
 QTEST_GUILESS_MAIN(TestFileOps)

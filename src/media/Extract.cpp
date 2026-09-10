@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
@@ -46,10 +47,29 @@ QStringList posterArguments(const QString& source, const QString& out, int strea
     return args;
 }
 
-// Per-sample seek + one frame, with showinfo so the actual delivered
-// timestamp can be recorded instead of the requested one (§6).
-QStringList sampleArguments(const QString& source, const QString& out, int streamIndex,
-                            double seekSeconds, int targetWidth)
+QString samplePath(const QString& framesDir, int index)
+{
+    return framesDir + QStringLiteral("/sample-%1.jpg").arg(index, 3, 10, QLatin1Char('0'));
+}
+
+// A tile is only usable when the JPEG is complete. A process killed mid-write
+// (timeout/cancel) leaves a truncated file behind; the end-of-image marker
+// tells the complete tiles apart from that last partial one.
+bool completeTile(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() < 4)
+        return false;
+    return file.seek(file.size() - 2) && file.read(2) == QByteArray::fromHex("ffd9");
+}
+
+// One process produces every storyboard tile: one input per sample time (an
+// input seek, so only the keyframe..sample span is decoded) and one JPEG
+// output per sample. A single invocation removes the per-sample process,
+// demuxer and decoder startup cost while keeping the same per-tile work.
+QStringList storyboardArguments(const QString& source, const QString& framesDir,
+                                int streamIndex, const QVector<qint64>& planMs,
+                                int targetWidth, int threads)
 {
     // -copyts keeps the original presentation timestamps: without it, the
     // input-seek shift re-bases the delivered pts_time to ~0 and the recorded
@@ -57,24 +77,34 @@ QStringList sampleArguments(const QString& source, const QString& out, int strea
     QStringList args{QStringLiteral("-v"), QStringLiteral("info"),
                      QStringLiteral("-nostdin"),
                      QStringLiteral("-copyts"),
-                     QStringLiteral("-threads"), QStringLiteral("1")};
-    if (seekSeconds > 0)
-        args << QStringLiteral("-ss") << QString::number(seekSeconds, 'f', 3);
-    args << QStringLiteral("-i") << source
-         << QStringLiteral("-map") << QStringLiteral("0:%1").arg(streamIndex)
-         << QStringLiteral("-an") << QStringLiteral("-sn")
-         << QStringLiteral("-frames:v") << QStringLiteral("1")
-         << QStringLiteral("-vf")
-         << QStringLiteral("scale=%1:%1:force_original_aspect_ratio=decrease:force_divisible_by=2,showinfo").arg(targetWidth)
-         << QStringLiteral("-filter_threads") << QStringLiteral("1")
-         << QStringLiteral("-threads") << QStringLiteral("1")
-         << QStringLiteral("-f") << QStringLiteral("image2")
-         << QStringLiteral("-y") << out;
+                     QStringLiteral("-threads"), QString::number(threads)};
+    for (const qint64 ms : planMs) {
+        const double seekSeconds = ms / 1000.0;
+        if (seekSeconds > 0)
+            args << QStringLiteral("-ss") << QString::number(seekSeconds, 'f', 3);
+        args << QStringLiteral("-i") << source;
+    }
+    // showinfo reports the delivered pts_time per tile (§6).
+    QStringList graph;
+    graph.reserve(planMs.size());
+    for (int k = 0; k < planMs.size(); ++k) {
+        graph << QStringLiteral("[%1:%2]scale=%3:%3:force_original_aspect_ratio=decrease"
+                                ":force_divisible_by=2,showinfo[s%4]")
+                     .arg(k).arg(streamIndex).arg(targetWidth).arg(k);
+    }
+    args << QStringLiteral("-filter_complex") << graph.join(QLatin1Char(';'));
+    for (int k = 0; k < planMs.size(); ++k) {
+        args << QStringLiteral("-map") << QStringLiteral("[s%1]").arg(k)
+             << QStringLiteral("-an") << QStringLiteral("-sn")
+             << QStringLiteral("-frames:v") << QStringLiteral("1")
+             << QStringLiteral("-f") << QStringLiteral("image2")
+             << QStringLiteral("-y") << samplePath(framesDir, k);
+    }
     return args;
 }
 
 // Runs a process with the shared hard-timeout behavior; returns false on
-// timeout. Output bound by kMaxLogBytes.
+// timeout or cancellation. Output bound by kMaxLogBytes.
 bool runBounded(const QString& program, const QStringList& args, int timeoutMs,
                 QByteArray* stdOut, QByteArray* stdErr, bool* timedOut,
                 const PidSink& pidSink = {}, const std::atomic_bool* cancelled = nullptr)
@@ -96,9 +126,9 @@ bool runBounded(const QString& program, const QStringList& args, int timeoutMs,
             *stdErr = process.errorString().toUtf8();
         return false;
     }
-    if (!process.waitForFinished(timeoutMs)) {
-        if (pidSink)
-            pidSink(0);
+    // The child is killed on timeout or cancellation; the process tree gets
+    // SIGTERM, then SIGKILL if it lingers.
+    const auto killTree = [&process] {
 #ifdef Q_OS_UNIX
         ::kill(-process.processId(), SIGTERM);
 #else
@@ -112,8 +142,25 @@ bool runBounded(const QString& program, const QStringList& args, int timeoutMs,
 #endif
             process.waitForFinished(2000);
         }
-        *timedOut = true;
-        return false;
+    };
+    // Wait in slices so the cancellation flag terminates the running process
+    // promptly (the old per-sample loop only checked between samples).
+    QElapsedTimer waiting;
+    waiting.start();
+    while (!process.waitForFinished(100)) {
+        if (cancelled && cancelled->load()) {
+            if (pidSink)
+                pidSink(0);
+            killTree();
+            return false;
+        }
+        if (waiting.elapsed() >= timeoutMs) {
+            if (pidSink)
+                pidSink(0);
+            killTree();
+            *timedOut = true;
+            return false;
+        }
     }
     if (pidSink)
         pidSink(0);
@@ -127,18 +174,20 @@ bool runBounded(const QString& program, const QStringList& args, int timeoutMs,
     return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
 }
 
-// Parses the last showinfo line's pts_time (seconds) from stderr.
-qint64 deliveredPtsMs(const QByteArray& log)
+// Delivered pts_time (ms) of the first frame each filter branch emits — the
+// frame that actually ends up in that branch's tile. One entry per branch
+// that produced a frame (§6: record actual timestamps, not requested ones).
+QVector<qint64> deliveredPtsMs(const QByteArray& log)
 {
     static const QRegularExpression re(
-        QStringLiteral("showinfo.*pts_time:([0-9]+\\.?[0-9]*)"));
-    qint64 ptsMs = -1;
+        QStringLiteral("showinfo.*\\bn:\\s*0\\s+pts:.*pts_time:([0-9]+\\.?[0-9]*)"));
+    QVector<qint64> times;
     QRegularExpressionMatchIterator it = re.globalMatch(QString::fromUtf8(log));
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
-        ptsMs = static_cast<qint64>(std::llround(m.captured(1).toDouble() * 1000.0));
+        times.append(static_cast<qint64>(std::llround(m.captured(1).toDouble() * 1000.0)));
     }
-    return ptsMs;
+    return times;
 }
 
 } // namespace
@@ -226,63 +275,89 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     }
     const QString framesDir = temporaryFrames.path();
 
-    QVector<qint64> actualTimes;
+    // One decode process per video; the hard timeout bounds the whole job.
+    bool timedOut = false;
+    QByteArray stdErr;
+    // Bounded from the core count: storyboard jobs run at most two at a time,
+    // so half the cores per process keeps the machine busy without
+    // oversubscribing it (§5).
+    const int threads = std::clamp(QThread::idealThreadCount() / 2, 2, 8);
+    const bool ok = runBounded(request.ffmpegPath,
+                               storyboardArguments(request.sourcePath, framesDir,
+                                                   request.selectedStreamIndex, plan,
+                                                   request.tileWidth, threads),
+                               request.timeoutMs, nullptr, &stdErr, &timedOut,
+                               pidSink, cancelled);
+
+    // Tiles that actually reached disk. A sample ffmpeg could not produce is
+    // skipped and the earlier ones still compose a usable partial atlas (§6).
+    QVector<int> produced;
     for (int i = 0; i < plan.size(); ++i) {
-        if (cancelled && cancelled->load()) {
-            result.error = QStringLiteral("storyboard cancelled");
+        if (completeTile(samplePath(framesDir, i)))
+            produced.append(i);
+    }
+    int firstMissing = plan.size();
+    for (int i = 0; i < plan.size(); ++i) {
+        if (i >= produced.size() || produced.at(i) != i) {
+            firstMissing = i;
             break;
         }
-        const QString framePath = framesDir + QStringLiteral("/sample-%1.jpg").arg(i, 3, 10, QLatin1Char('0'));
-        QFile::remove(framePath);
-        bool timedOut = false;
-        QByteArray stdErr;
-        const bool ok = runBounded(request.ffmpegPath,
-                                   sampleArguments(request.sourcePath, framePath,
-                                                   request.selectedStreamIndex,
-                                                   plan.at(i) / 1000.0, request.tileWidth),
-                                   request.timeoutMs, nullptr, &stdErr, &timedOut,
-                                   pidSink, cancelled);
-        if (timedOut) {
-            result.timedOut = true;
-            result.error = QStringLiteral("storyboard sample %1 timed out").arg(i);
-            break;
-        }
-        if (!ok) {
-            // A failure at one timestamp may leave a partial usable
-            // storyboard (§6): stop expanding but keep collected samples.
-            result.error = QStringLiteral("storyboard stopped at sample %1: %2")
-                               .arg(i)
-                               .arg(QString::fromUtf8(stdErr.left(300)));
-            break;
-        }
-        const qint64 pts = deliveredPtsMs(stdErr);
-        actualTimes.append(pts >= 0 ? pts : plan.at(i));
     }
 
-    if (actualTimes.isEmpty()) {
-        result.error = result.error.isEmpty()
-            ? QStringLiteral("no storyboard samples extracted") : result.error;
+    if (cancelled && cancelled->load())
+        result.error = QStringLiteral("storyboard cancelled");
+    else if (timedOut) {
+        result.timedOut = true;
+        result.error = QStringLiteral("storyboard sample %1 timed out").arg(firstMissing);
+    } else if (!ok) {
+        result.error = QStringLiteral("storyboard stopped at sample %1: %2")
+                           .arg(firstMissing)
+                           .arg(QString::fromUtf8(stdErr.left(300)));
+    }
+
+    if (produced.isEmpty()) {
+        if (result.error.isEmpty())
+            result.error = QStringLiteral("no storyboard samples extracted");
+        return result;
+    }
+
+    // showinfo lines interleave across the branches, but both the tile order
+    // and the delivered timestamps are ascending, so sorting restores the
+    // per-sample mapping. A count mismatch (e.g. a truncated log) falls back
+    // to the requested times rather than mis-assigning actual ones.
+    QVector<qint64> delivered = deliveredPtsMs(stdErr);
+    std::sort(delivered.begin(), delivered.end());
+    const bool timesAvailable = delivered.size() == produced.size();
+
+    QVector<qint64> times;
+    QVector<QImage> tiles;
+    times.reserve(produced.size());
+    tiles.reserve(produced.size());
+    for (int j = 0; j < produced.size(); ++j) {
+        const int i = produced.at(j);
+        const QImage tile(samplePath(framesDir, i));
+        if (tile.isNull())
+            continue; // unreadable tile: drop it with its timestamp
+        tiles.append(tile);
+        times.append(timesAvailable ? delivered.at(j) : plan.at(i));
+    }
+    if (tiles.isEmpty()) {
+        result.error = QStringLiteral("storyboard tiles unreadable");
         return result;
     }
 
     // Compose the atlas from the decoded tiles; one atlas at a time keeps
     // decoded RAM bounded (§6).
-    QImage tile0(framesDir + QStringLiteral("/sample-000.jpg"));
-    if (tile0.isNull()) {
-        result.error = QStringLiteral("first storyboard tile unreadable");
-        return result;
-    }
+    const QImage& tile0 = tiles.first();
     const int tileW = tile0.width();
     const int tileH = tile0.height();
     const int columns = qMax(1, request.columns);
-    const int rows = (actualTimes.size() + columns - 1) / columns;
+    const int rows = (tiles.size() + columns - 1) / columns;
     QImage atlas(tileW * columns, tileH * rows, QImage::Format_RGB32);
     atlas.fill(Qt::black);
     QPainter painter(&atlas);
-    for (int i = 0; i < actualTimes.size(); ++i) {
-        QImage tile(framesDir + QStringLiteral("/sample-%1.jpg").arg(i, 3, 10, QLatin1Char('0')));
-        if (tile.isNull())
-            break;
+    for (int i = 0; i < tiles.size(); ++i) {
+        QImage tile = tiles.at(i);
         const int col = i % columns;
         const int row = i / columns;
         if (tile.size() != QSize(tileW, tileH))
@@ -334,7 +409,7 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     }
 
     result.outputPath = request.outputPath;
-    result.sampleTimesMs = actualTimes;
+    result.sampleTimesMs = times;
     result.pixelSize = atlas.size();
     result.ok = true; // partial failures keep their reason in error
 

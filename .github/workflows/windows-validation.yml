@@ -1,0 +1,58 @@
+name: Windows self-contained validation build
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make curl tar xz zstd diffutils
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python-mako
+            mingw-w64-ucrt-x86_64-python-jinja
+            mingw-w64-ucrt-x86_64-luajit
+            mingw-w64-ucrt-x86_64-libass
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-declarative
+            mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-ffmpeg
+      - name: Build private media tools
+        run: scripts/release/build-media.sh
+      - name: Build application and deploy Qt
+        run: |
+          cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCRUBTUB_DEPLOY_QT=ON
+          cmake --build build-release -j 4
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build-release -R '^(mediatools|performance|catalogueupdates)$' --output-on-failure
+          cmake --install build-release --prefix "$PWD/out/windows-validation"
+      - name: Stage DLLs and preserve build materials
+        run: |
+          python scripts/release/stage-windows-media.py out/windows-validation --dependencies "$(cygpath -m "$MINGW_PREFIX")"
+          SCRUBTUB_RELEASE_MEDIA_DIR="$(cygpath -m "$PWD/out/windows-validation/bin/media")" QT_QPA_PLATFORM=offscreen ctest --test-dir build-release -R '^releasesmoke$' --output-on-failure
+          pacman -Q > out/media/manifests/msys2-packages.txt
+          python scripts/release/collect-windows-compliance.py out/windows-validation out/windows-sources --dependencies "$(cygpath -m "$MINGW_PREFIX")"
+          python scripts/release/export-source.py out/windows-sources/scrubtub
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s scripts/release/tests
+          PYTHONDONTWRITEBYTECODE=1 python scripts/release/package-release.py out/windows-validation out/windows-sources out/windows-artifacts
+      # Validation artifacts only. No GitHub Release is created by this workflow.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scrubtub-windows-validation
+          path: |
+            out/windows-artifacts/

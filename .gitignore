@@ -39,3 +39,7 @@ fixtures/
 *.sqlite-wal
 *.sqlite-shm
 *.db
+
+# Python release-tool caches
+__pycache__/
+*.pyc

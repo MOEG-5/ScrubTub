@@ -12,7 +12,8 @@ Contributor and testing guidance lives in [AGENTS.md](AGENTS.md).
 ## License
 
 GPL-3.0-only — see [LICENSE](LICENSE). Distributed derivatives must meet GPL
-requirements; official binaries will be offered free of charge.
+requirements; official binaries will be offered free of charge. Dependencies
+retain their own licenses; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Building (Linux development)
 
@@ -35,6 +36,14 @@ Sanitizer build used by the native contract checks:
 cmake -B build-san -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSCRUBTUB_SANITIZERS=ON
 cmake --build build-san
 ```
+
+## Self-contained builds
+
+Private media builds and staging instructions are in [docs/RELEASING.md](docs/RELEASING.md).
+Builds stay under `out/` and do not replace system tools. Release packaging
+collects matching dependency sources and complete notices, verifies the inventory,
+and produces paired binary/source downloads. GitHub workflows build Linux and
+Windows artifacts; neither publishes a release automatically.
 
 ## Testing
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 the scrubtub authors.
+#include "app/MediaTools.h"
 // Extraction contract checks (TECH_SPEC.md section 12): poster geometry and
 // content, storyboard sample plan/timestamps/atlas, rotation handling,
 // cancellation, per-job timeout, partial-atlas usability and corrupt-input
@@ -86,8 +87,8 @@ void TestExtract::initTestCase()
     // Read-only guard: the corpus must be byte-identical afterwards.
     m_fingerprint = vidsFingerprint();
 
-    m_ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-    m_ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    m_ffmpeg = findMediaTool(QStringLiteral("ffmpeg"), "SCRUBTUB_FFMPEG_PATH");
+    m_ffprobe = findMediaTool(QStringLiteral("ffprobe"), "SCRUBTUB_FFPROBE_PATH");
     QVERIFY2(!m_ffmpeg.isEmpty(), "ffmpeg required");
     QVERIFY2(!m_ffprobe.isEmpty(), "ffprobe required");
 
@@ -364,7 +365,7 @@ void TestExtract::rotatedClipProducesPortraitPoster()
     const QString rotated = m_temp.filePath(QStringLiteral("rotated.mp4"));
     QFile::remove(rotated);
     QProcess transpose;
-    transpose.start(ffmpeg(), {QStringLiteral("-v"), QStringLiteral("error"),
+    transpose.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {QStringLiteral("-v"), QStringLiteral("error"),
                                QStringLiteral("-nostdin"), QStringLiteral("-i"), m_synthetic,
                                QStringLiteral("-t"), QStringLiteral("3"),
                                QStringLiteral("-vf"), QStringLiteral("transpose=1"),

@@ -819,6 +819,37 @@ ApplicationWindow {
                 ActionButton { text: qsTr("Export catalogue backup…"); onClicked: exportDialog.open() }
                 ActionButton { text: qsTr("Restore catalogue from backup…"); onClicked: importDialog.open() }
                 ActionButton { text: qsTr("Clear generated previews…"); onClicked: clearDialog.open() }
+                ActionButton { text: qsTr("About & licenses"); onClicked: aboutDialog.open() }
+            }
+        }
+    }
+
+    Dialog {
+        id: aboutDialog
+        title: qsTr("About ScrubTub")
+        anchors.centerIn: parent
+        width: Math.min(window.width - 40, 520)
+        padding: 24
+        modal: true
+        standardButtons: Dialog.Close
+        background: Rectangle { color: "#20221e"; radius: 10; border.color: "#4d5046" }
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+            Label { text: qsTr("ScrubTub %1").arg(Qt.application.version); font.pixelSize: 20 }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Copyright © 2026 the ScrubTub authors. Licensed under GNU GPL version 3. You may use, modify and redistribute it under that license. Provided without warranty.")
+            }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("Uses Qt under LGPL/GPL terms, FFmpeg, mpv and other open-source components. Full notices are included with this download. Corresponding source and build materials accompany each release.")
+            }
+            ActionButton {
+                text: qsTr("Open licenses & notices")
+                onClicked: Qt.openUrlExternally(licenseDirectory)
             }
         }
     }

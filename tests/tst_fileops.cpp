@@ -192,8 +192,12 @@ void TestFileOps::addRootFromFileUrlWithSpecialCharacters()
                  seasonDir, QStringLiteral("episode 02.mp4"), kSyntheticDurationMs, &error),
              qUtf8Printable(error));
 
-    // Exactly what FolderDialog.selectedFolder produces.
-    const QString url = QUrl::fromLocalFile(bracketedRoot + QLatin1Char('/')).toString();
+    // Exercise the encoded URL form independently of Qt's display formatting
+    // defaults (which differ between supported Qt releases).
+    const QString url = QUrl::fromLocalFile(bracketedRoot + QLatin1Char('/'))
+                            .toString(QUrl::FullyEncoded)
+                            .replace(QLatin1Char('['), QStringLiteral("%5B"))
+                            .replace(QLatin1Char(']'), QStringLiteral("%5D"));
     QVERIFY2(url.contains(QStringLiteral("%5BSubsPlease%5D")),
              "test setup expected a percent-encoded URL");
     QVERIFY2(url.startsWith(QStringLiteral("file://")), "expected a file:// URL");

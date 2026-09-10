@@ -1,0 +1,5 @@
+# Never send local media, profiles, or build trees to a Docker build context.
+**
+!scripts/
+!scripts/release/
+!scripts/release/Dockerfile.linux

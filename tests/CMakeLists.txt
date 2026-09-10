@@ -155,3 +155,19 @@ target_link_libraries(tst_catalogueupdates PRIVATE scrubtub_core Qt6::Test scrub
 set_target_properties(tst_catalogueupdates PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_test(NAME catalogueupdates COMMAND tst_catalogueupdates)
 set_tests_properties(catalogueupdates PROPERTIES TIMEOUT 20 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Explicit private-build validation; ordinary runs skip without the directory.
+add_executable(tst_mediarelease tst_mediarelease.cpp)
+target_link_libraries(tst_mediarelease PRIVATE scrubtub_testsupport scrubtub_core Qt6::Test)
+add_test(NAME mediarelease COMMAND tst_mediarelease)
+set_tests_properties(mediarelease PROPERTIES TIMEOUT 1800)
+
+add_executable(tst_mediatools tst_mediatools.cpp)
+target_link_libraries(tst_mediatools PRIVATE scrubtub_core Qt6::Test)
+add_test(NAME mediatools COMMAND tst_mediatools)
+
+# CI uses newly generated original clips, never an uploaded copy of vids/.
+add_executable(tst_releasesmoke tst_releasesmoke.cpp)
+target_link_libraries(tst_releasesmoke PRIVATE scrubtub_testsupport scrubtub_core Qt6::Test)
+add_test(NAME releasesmoke COMMAND tst_releasesmoke)
+set_tests_properties(releasesmoke PROPERTIES TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

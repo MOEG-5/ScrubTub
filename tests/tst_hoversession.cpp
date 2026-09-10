@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 the scrubtub authors.
+#include "app/MediaTools.h"
 // HoverSession contract checks (TECH_SPEC.md section 6): keyframe-then-exact
 // seeking, continuous motion, source switch/disengage hygiene, cached-only
 // fallback when mpv is unavailable, warm seek latency. Every live case drives
@@ -84,7 +85,7 @@ void TestHoverSession::initTestCase()
     }
     // mpv is optional: cached previews carry hover feedback without it, and
     // the live cases report that gap honestly instead of faking a pass.
-    m_mpv = QStandardPaths::findExecutable(QStringLiteral("mpv"));
+    m_mpv = findMediaTool(QStringLiteral("mpv"), "SCRUBTUB_MPV_PATH");
 }
 
 void TestHoverSession::cleanupTestCase()

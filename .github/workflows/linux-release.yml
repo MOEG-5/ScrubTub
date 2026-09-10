@@ -1,0 +1,24 @@
+name: Linux release artifacts
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build isolated release environment
+        run: docker build -f scripts/release/Dockerfile.linux -t scrubtub-release-builder scripts/release
+      - name: Build, test and collect corresponding sources
+        run: |
+          mkdir -p out/release
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$PWD,dst=/repo,readonly" \
+            --mount "type=bind,src=$PWD/out/release,dst=/work" \
+            scrubtub-release-builder bash /repo/scripts/release/build-linux-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scrubtub-linux-release-artifacts
+          path: out/release/artifacts/

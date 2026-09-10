@@ -6,7 +6,10 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QStandardPaths>
+#include "app/MediaTools.h"
 #include <QThread>
+#include <QDir>
+#include <QUrl>
 
 #include <cstdio>
 
@@ -90,12 +93,12 @@ int main(int argc, char* argv[])
     QObject::connect(catalogueThread, &QThread::finished, catalogue, &QObject::deleteLater);
     catalogueThread->start();
 
-    // ffprobe from PATH or the bundled directory; a missing tool surfaces as a
+    // Prefer private bundled tools, then PATH; a missing tool surfaces as a
     // visible error on scan, not a silent failure.
-    const QString ffprobePath = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
-    const QString ffmpegPath = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffprobePath = scrubtub::findMediaTool(QStringLiteral("ffprobe"), "SCRUBTUB_FFPROBE_PATH");
+    const QString ffmpegPath = scrubtub::findMediaTool(QStringLiteral("ffmpeg"), "SCRUBTUB_FFMPEG_PATH");
     if (ffprobePath.isEmpty() || ffmpegPath.isEmpty())
-        qWarning("ffprobe/ffmpeg not found on PATH: metadata extraction will fail "
+        qWarning("ffprobe/ffmpeg not found in the bundle or on PATH: metadata extraction will fail "
                  "until a bundled copy is available");
 
     QString initError;
@@ -152,6 +155,9 @@ int main(int argc, char* argv[])
                 .arg(profile);
         }));
     engine.rootContext()->setContextProperty(QStringLiteral("hoverSession"), &hoverSession);
+    engine.rootContext()->setContextProperty(QStringLiteral("licenseDirectory"),
+        QUrl::fromLocalFile(QDir(QCoreApplication::applicationDirPath())
+            .absoluteFilePath(QStringLiteral("../share/scrubtub"))));
     engine.rootContext()->setContextProperty(QStringLiteral("catalogue"), &proxy);
     engine.rootContext()->setContextProperty(QStringLiteral("catalogueModel"),
                                              catalogueModel);

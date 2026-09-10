@@ -17,10 +17,16 @@ option(SCRUBTUB_SANITIZERS "Build with AddressSanitizer/UBSan (GCC/Clang)" OFF)
 
 # --- Dependencies -----------------------------------------------------------
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
+if(SCRUBTUB_BUILD_TESTS)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
+endif()
 qt_standard_project_setup(REQUIRES 6.8)
 
 find_package(SQLite3 REQUIRED)
+if(NOT TARGET SQLite3::SQLite3 AND TARGET SQLite::SQLite3)
+    add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
 
 # RapidFuzz: prefer the system package; fall back to a pinned FetchContent copy
 # so a clean checkout still configures. Pinned per docs/DEPENDENCIES.md.

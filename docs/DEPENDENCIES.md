@@ -18,9 +18,17 @@ Distribution notes:
 
 - The unmodified GPLv3 text ships as `LICENSE`; source files carry
   `SPDX-License-Identifier: GPL-3.0-only` headers.
-- Distributed Qt modules are dynamically linked; the package includes the used
-  runtime components, required notices, and corresponding source/build offers.
+- Distributed Qt modules are dynamically linked. Final release packages must
+  include the used runtime components, required notices, and corresponding
+  source/build materials. The release collectors generate that inventory from
+  the actual staged files and reject missing source or notice material.
 - The shipped FFmpeg build and its optional components are documented and
   license-checked separately from this development-machine table.
 - No dependency is vendored into Git; the RapidFuzz FetchContent fallback pins
   an upstream release by URL and hash.
+
+The private optimized media build pins FFmpeg 9.0.1, mpv 0.41.0, dav1d 1.5.4
+and libplacebo 7.360.1. See [RELEASING.md](RELEASING.md) for the feature policy,
+source collection, verification gates and platform workflows. The development
+machine table above is not the Linux release dependency lock: Linux releases
+use the isolated Debian builder and ship their exact `DEPENDENCIES.json`.

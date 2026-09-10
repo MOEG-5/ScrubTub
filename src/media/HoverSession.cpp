@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 the scrubtub authors.
 #include "HoverSession.h"
+#include "app/MediaTools.h"
 
 #include <QDir>
 #include <QFile>
@@ -25,10 +26,7 @@ constexpr int kSeekBudgetMs = 1500;
 QString findMpv()
 {
     // Cached previews remain available when mpv is missing.
-    const QByteArray overridePath = qgetenv("SCRUBTUB_MPV_PATH");
-    if (!overridePath.isEmpty())
-        return QString::fromLocal8Bit(overridePath);
-    return QStandardPaths::findExecutable(QStringLiteral("mpv"));
+    return findMediaTool(QStringLiteral("mpv"), "SCRUBTUB_MPV_PATH");
 }
 } // namespace
 

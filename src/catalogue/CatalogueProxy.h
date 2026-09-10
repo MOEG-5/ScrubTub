@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // UI-thread facade over the worker-thread Catalogue (TECH_SPEC.md section 2:
 // the UI thread must not wait on workers). QML talks only to this object;
 // calls are queued to the catalogue thread and signals are forwarded back.
@@ -9,13 +9,13 @@
 
 #include <QObject>
 
-namespace itub {
+namespace scrubtub {
 
 class Catalogue;
 
 class CatalogueProxy : public QObject {
     Q_OBJECT
-    Q_PROPERTY(itub::CatalogueModel* model READ model CONSTANT FINAL)
+    Q_PROPERTY(scrubtub::CatalogueModel* model READ model CONSTANT FINAL)
 
 public:
     explicit CatalogueProxy(Catalogue* catalogue, CatalogueModel* model,
@@ -31,6 +31,8 @@ public:
     Q_INVOKABLE void cancelScanning();
     Q_INVOKABLE void setRating(qint64 videoId, int rating);
     Q_INVOKABLE void openInDefaultPlayer(qint64 videoId);
+    Q_INVOKABLE void openFileLocation(qint64 videoId);
+    Q_INVOKABLE void requestFileInfo(qint64 videoId);
     Q_INVOKABLE void requestStoryboard(qint64 videoId);
     Q_INVOKABLE void hoverEngage(qint64 videoId);
     Q_INVOKABLE void requestSampleTimes(qint64 videoId);
@@ -39,7 +41,7 @@ public:
     // fields; unknown keys are ignored.
     Q_INVOKABLE void search(const QVariantMap& spec);
     Q_INVOKABLE void clearSearch();
-    Q_INVOKABLE void fetchRowsPage(const QVariantList& videoIds);
+    Q_INVOKABLE void fetchRowsPage(const QVariantList& videoIds, quint64 generation);
     Q_INVOKABLE void addManualTag(qint64 videoId, const QString& text);
     Q_INVOKABLE void removeTag(qint64 videoId, qint64 tagId);
     Q_INVOKABLE void suppressAutoTag(qint64 videoId, qint64 tagId);
@@ -57,7 +59,8 @@ public:
     Q_INVOKABLE void loadExistingState();
 
 signals:
-    void rootAdded(const itub::RootInfo& root);
+    void filterBoundsReady(qint64 rootId, qint64 durationMs, qint64 sizeBytes);
+    void rootAdded(const scrubtub::RootInfo& root);
     void rootRemoved(qint64 rootId);
     void rootRejected(const QString& reason);
     void operationFailed(const QString& message);
@@ -72,6 +75,7 @@ signals:
     void trashResult(qint64 videoId, bool ok, const QString& reason);
     void backupExported(const QString& destPath);
     void backupImported();
+    void fileInfoReady(qint64 videoId, const QVariantMap& info);
     void cacheUsageReady(qint64 bytes);
     void settingsReady(const QVariantMap& settings);
 
@@ -80,4 +84,4 @@ private:
     CatalogueModel* m_model;
 };
 
-} // namespace itub
+} // namespace scrubtub

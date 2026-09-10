@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Deterministic filename/folder/technical tagging (TECH_SPEC.md section 7).
 //
 // Normalization: NFKC + case folding for tag identity; a readable display
@@ -13,7 +13,7 @@
 #include <QString>
 #include <QStringList>
 
-namespace itub {
+namespace scrubtub {
 
 class TagEngine {
 public:
@@ -50,4 +50,4 @@ public:
     static QString diacriticFold(const QString& text);
 };
 
-} // namespace itub
+} // namespace scrubtub

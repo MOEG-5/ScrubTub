@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "Extract.h"
 
+#include <QBuffer>
 #include <QDir>
+#include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
@@ -18,7 +20,7 @@
 #include <unistd.h>
 #endif
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 
@@ -63,7 +65,7 @@ QStringList sampleArguments(const QString& source, const QString& out, int strea
          << QStringLiteral("-an") << QStringLiteral("-sn")
          << QStringLiteral("-frames:v") << QStringLiteral("1")
          << QStringLiteral("-vf")
-         << QStringLiteral("scale=%1:-2,showinfo").arg(targetWidth)
+         << QStringLiteral("scale=%1:%1:force_original_aspect_ratio=decrease:force_divisible_by=2,showinfo").arg(targetWidth)
          << QStringLiteral("-filter_threads") << QStringLiteral("1")
          << QStringLiteral("-threads") << QStringLiteral("1")
          << QStringLiteral("-f") << QStringLiteral("image2")
@@ -144,7 +146,7 @@ qint64 deliveredPtsMs(const QByteArray& log)
 QVector<qint64> Extract::samplePlanMs(qint64 durationMs, int sampleCount)
 {
     QVector<qint64> plan;
-    if (durationMs <= 0)
+    if (durationMs <= 0 || sampleCount <= 0)
         return plan;
     // Fewer samples for very short clips (§6); keep at least two.
     qint64 count = sampleCount;
@@ -153,7 +155,7 @@ QVector<qint64> Extract::samplePlanMs(qint64 durationMs, int sampleCount)
     count = std::min<qint64>(count, sampleCount);
     plan.reserve(static_cast<int>(count));
     for (qint64 k = 0; k < count; ++k)
-        plan.append(durationMs * k / count);
+        plan.append(durationMs * (2 * k + 1) / (2 * count));
     return plan;
 }
 
@@ -217,8 +219,12 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     }
 
     QDir().mkpath(request.outputDir);
-    const QString framesDir = request.outputDir + QStringLiteral("/frames");
-    QDir().mkpath(framesDir);
+    QTemporaryDir temporaryFrames(request.outputDir + QStringLiteral("/frames-XXXXXX"));
+    if (!temporaryFrames.isValid()) {
+        result.error = QStringLiteral("could not create temporary preview directory");
+        return result;
+    }
+    const QString framesDir = temporaryFrames.path();
 
     QVector<qint64> actualTimes;
     for (int i = 0; i < plan.size(); ++i) {
@@ -289,11 +295,37 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     // A stale artifact at the destination makes QFile::rename fail — remove
     // it first (the cache row for this revision is being replaced anyway).
     const QString atlasTemp = request.outputPath + QStringLiteral(".tmp.jpg");
-    if (!atlas.save(atlasTemp, "jpg", 85)) {
-        result.error = QStringLiteral("could not write storyboard atlas");
+    QByteArray encoded;
+    int quality = 65;
+    for (;;) {
+        encoded.clear();
+        QBuffer buffer(&encoded);
+        buffer.open(QIODevice::WriteOnly);
+        if (!atlas.save(&buffer, "jpg", quality)) {
+            result.error = QStringLiteral("could not encode preview atlas");
+            return result;
+        }
+        if (encoded.size() <= kSparsePreviewMaxBytes)
+            break;
+        if (quality > 35) {
+            quality -= 10;
+        } else {
+            // Keep tile boundaries integral when exceptionally noisy images
+            // need a smaller canvas to fit the per-video storage ceiling.
+            atlas = atlas.scaled(columns * qMax(1, atlas.width() / columns / 2),
+                                 rows * qMax(1, atlas.height() / rows / 2),
+                                 Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            quality = 65;
+        }
+    }
+    QFile output(atlasTemp);
+    if (!output.open(QIODevice::WriteOnly) || output.write(encoded) != encoded.size()) {
+        result.error = QStringLiteral("could not write preview atlas");
+        output.close();
         QFile::remove(atlasTemp);
         return result;
     }
+    output.close();
     QFile::remove(request.outputPath);
     if (!QFile::rename(atlasTemp, request.outputPath)) {
         QFile::remove(atlasTemp);
@@ -311,4 +343,4 @@ ExtractResult Extract::storyboard(const StoryboardRequest& request, const PidSin
     return result;
 }
 
-} // namespace itub
+} // namespace scrubtub

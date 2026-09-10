@@ -1,6 +1,6 @@
 # Video catalogue — implementation plan
 
-Status: draft for the implementing agent, 2026-09-06. This task produces specifications, not the application. Read [TECH_SPEC.md](TECH_SPEC.md) for normative behavior and acceptance criteria. `itub` is a working directory name, not a final product name.
+Status: draft for the implementing agent, 2026-09-06. This task produces specifications, not the application. Read [TECH_SPEC.md](TECH_SPEC.md) for normative behavior and acceptance criteria. The final product name is **ScrubTub**. The Qt Multimedia prototype was rejected for performance; live previews use mpv.
 
 ## Product brief
 

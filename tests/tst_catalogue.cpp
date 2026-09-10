@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Catalogue contract checks (TECH_SPEC.md sections 4, 5, 12 "Reconciliation"):
 // scans do not duplicate rows, interrupted/offline scans never imply mass
 // deletion, annotations survive rescans and revisions, changed content bumps
@@ -24,13 +24,13 @@
 
 #include <memory>
 
-using namespace itub;
+using namespace scrubtub;
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
 static QString fixturePath()
 {
-    const QByteArray env = qgetenv("ITUB_TEST_SOURCE_VIDEO");
-    return env.isEmpty() ? QStringLiteral(ITUB_DEFAULT_SOURCE_FIXTURE)
+    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
+    return env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
                          : QString::fromLocal8Bit(env);
 }
 #endif
@@ -89,7 +89,7 @@ void TestCatalogue::initTestCase()
     QVERIFY(m_profileBase.isValid());
     QVERIFY(QDir().mkpath(m_profileBase.filePath(QStringLiteral("corpora"))));
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
     if (fixturePath().isEmpty() || !QFileInfo::exists(fixturePath()))
         QSKIP("Source fixture unavailable");
 #else

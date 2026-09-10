@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "FixtureCorpus.h"
 
 #include <QDir>
@@ -8,7 +8,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 
-namespace itub::testsupport {
+namespace scrubtub::testsupport {
 
 FixtureCorpus::FixtureCorpus(const QString& rootDir)
     : m_dir(rootDir)
@@ -20,7 +20,7 @@ QString FixtureCorpus::defaultBaseDir()
 {
     const QString home =
         QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-    return home + QStringLiteral("/.itub-agent-test-corpora");
+    return home + QStringLiteral("/.scrubtub-agent-test-corpora");
 }
 
 bool FixtureCorpus::accountBytes(qint64 bytes, QString* error)
@@ -103,4 +103,4 @@ bool FixtureCorpus::mkdir(const QString& relativeDir)
     return m_dir.mkpath(relativeDir);
 }
 
-} // namespace itub::testsupport
+} // namespace scrubtub::testsupport

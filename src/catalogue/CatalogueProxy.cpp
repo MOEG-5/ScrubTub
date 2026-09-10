@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "CatalogueProxy.h"
 
 #include "Catalogue.h"
+#include "TagEngine.h"
 
 #include <QMetaObject>
 
-namespace itub {
+namespace scrubtub {
 
 CatalogueProxy::CatalogueProxy(Catalogue* catalogue, CatalogueModel* model,
                                QObject* parent)
@@ -22,13 +23,20 @@ CatalogueProxy::CatalogueProxy(Catalogue* catalogue, CatalogueModel* model,
     connect(catalogue, &Catalogue::sampleTimesReady, this, &CatalogueProxy::sampleTimesReady);
     connect(catalogue, &Catalogue::cacheEntryChanged, this, &CatalogueProxy::cacheEntryChanged);
     connect(catalogue, &Catalogue::searchCompleted, this, &CatalogueProxy::searchCompleted);
+    connect(catalogue, &Catalogue::filterBoundsReady, this, &CatalogueProxy::filterBoundsReady);
     connect(catalogue, &Catalogue::tagsReady, this, &CatalogueProxy::tagsReady);
     connect(catalogue, &Catalogue::tagListChanged, this, &CatalogueProxy::tagListChanged);
+    connect(catalogue, &Catalogue::cacheUsageReady, this, &CatalogueProxy::cacheUsageReady);
+    connect(catalogue, &Catalogue::trashResult, this, &CatalogueProxy::trashResult);
+    connect(catalogue, &Catalogue::backupExported, this, &CatalogueProxy::backupExported);
+    connect(catalogue, &Catalogue::backupImported, this, &CatalogueProxy::backupImported);
+    connect(catalogue, &Catalogue::settingsReady, this, &CatalogueProxy::settingsReady);
+    connect(catalogue, &Catalogue::fileInfoReady, this, &CatalogueProxy::fileInfoReady);
 }
 
 void CatalogueProxy::search(const QVariantMap& spec)
 {
-    itub::QuerySpec query;
+    scrubtub::QuerySpec query;
     query.text = spec.value(QStringLiteral("text")).toString();
     query.sizeMin = spec.value(QStringLiteral("sizeMin"), -1).toLongLong();
     query.sizeMax = spec.value(QStringLiteral("sizeMax"), -1).toLongLong();
@@ -41,9 +49,14 @@ void CatalogueProxy::search(const QVariantMap& spec)
     query.durationMaxMs = spec.value(QStringLiteral("durationMaxMs"), -1).toLongLong();
     query.ratingMode = spec.value(QStringLiteral("ratingMode"), 0).toInt();
     query.ratingValue = spec.value(QStringLiteral("ratingValue"), 0).toInt();
+    query.ratingMin = spec.value(QStringLiteral("ratingMin"), -1).toInt();
+    query.ratingMax = spec.value(QStringLiteral("ratingMax"), -1).toInt();
     query.includeAllTags = spec.value(QStringLiteral("includeAllTags")).toStringList();
     query.includeAnyTags = spec.value(QStringLiteral("includeAnyTags")).toStringList();
     query.excludeTags = spec.value(QStringLiteral("excludeTags")).toStringList();
+    for (auto* tags : {&query.includeAllTags, &query.includeAnyTags, &query.excludeTags})
+        for (QString& tag : *tags)
+            tag = TagEngine::normalize(tag);
     query.rootId = spec.value(QStringLiteral("rootId"), -1).toLongLong();
     query.folderPrefix = spec.value(QStringLiteral("folderPrefix")).toString();
     query.viewsMin = spec.value(QStringLiteral("viewsMin"), -1).toLongLong();
@@ -61,13 +74,13 @@ void CatalogueProxy::clearSearch()
     QMetaObject::invokeMethod(m_catalogue, [this] { m_catalogue->clearSearch(); });
 }
 
-void CatalogueProxy::fetchRowsPage(const QVariantList& videoIds)
+void CatalogueProxy::fetchRowsPage(const QVariantList& videoIds, quint64 generation)
 {
     QList<qint64> ids;
     for (const QVariant& id : videoIds)
         ids.append(id.toLongLong());
-    QMetaObject::invokeMethod(m_catalogue, [this, ids] {
-        m_catalogue->fetchRowsPage(ids);
+    QMetaObject::invokeMethod(m_catalogue, [this, ids, generation] {
+        m_catalogue->fetchRowsPage(ids, generation);
     });
 }
 
@@ -202,6 +215,20 @@ void CatalogueProxy::openInDefaultPlayer(qint64 videoId)
     });
 }
 
+void CatalogueProxy::requestFileInfo(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->requestFileInfo(videoId);
+    });
+}
+
+void CatalogueProxy::openFileLocation(qint64 videoId)
+{
+    QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
+        m_catalogue->openFileLocation(videoId);
+    });
+}
+
 void CatalogueProxy::requestStoryboard(qint64 videoId)
 {
     QMetaObject::invokeMethod(m_catalogue, [this, videoId] {
@@ -230,4 +257,4 @@ void CatalogueProxy::requestSampleTimes(qint64 videoId)
     });
 }
 
-} // namespace itub
+} // namespace scrubtub

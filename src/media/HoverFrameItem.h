@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Paints the hovered card's live paused-player frame. One instance exists in
 // the UI (a single overlay over the hovered card), fed by HoverSession.
 #pragma once
@@ -7,7 +7,7 @@
 #include <QImage>
 #include <QQuickPaintedItem>
 
-namespace itub {
+namespace scrubtub {
 
 class HoverFrameItem : public QQuickPaintedItem {
     Q_OBJECT
@@ -27,4 +27,4 @@ private:
     QImage m_frame;
 };
 
-} // namespace itub
+} // namespace scrubtub

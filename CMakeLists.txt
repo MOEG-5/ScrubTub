@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(itub
+project(ScrubTub
     VERSION 0.1.0
     DESCRIPTION "Video catalogue for Windows and Linux"
     LANGUAGES C CXX)
@@ -12,13 +12,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-option(ITUB_BUILD_TESTS "Build tests" ON)
-option(ITUB_BUILD_BENCH "Build benchmark executables" ON)
-option(ITUB_SANITIZERS "Build with AddressSanitizer/UBSan (GCC/Clang)" OFF)
+option(SCRUBTUB_BUILD_TESTS "Build tests" ON)
+option(SCRUBTUB_SANITIZERS "Build with AddressSanitizer/UBSan (GCC/Clang)" OFF)
 
 # --- Dependencies -----------------------------------------------------------
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Multimedia Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network Test)
 qt_standard_project_setup(REQUIRES 6.8)
 
 find_package(SQLite3 REQUIRED)
@@ -37,34 +36,31 @@ endif()
 
 # --- Global compile settings -------------------------------------------------
 
-add_library(itub_warnings INTERFACE)
+add_library(scrubtub_warnings INTERFACE)
 if(MSVC)
-    target_compile_options(itub_warnings INTERFACE /W4 /permissive-)
+    target_compile_options(scrubtub_warnings INTERFACE /W4 /permissive-)
 else()
-    target_compile_options(itub_warnings INTERFACE -Wall -Wextra -Wpedantic)
+    target_compile_options(scrubtub_warnings INTERFACE -Wall -Wextra -Wpedantic)
 endif()
 
-if(ITUB_SANITIZERS AND NOT MSVC)
-    add_library(itub_sanitizers INTERFACE)
-    target_compile_options(itub_sanitizers INTERFACE
+if(SCRUBTUB_SANITIZERS AND NOT MSVC)
+    add_library(scrubtub_sanitizers INTERFACE)
+    target_compile_options(scrubtub_sanitizers INTERFACE
         -fsanitize=address,undefined -fno-omit-frame-pointer -g)
-    target_link_options(itub_sanitizers INTERFACE -fsanitize=address,undefined)
+    target_link_options(scrubtub_sanitizers INTERFACE -fsanitize=address,undefined)
     message(STATUS "Sanitizers enabled (ASan/UBSan)")
 endif()
 
-add_library(itub_defaults INTERFACE)
-target_link_libraries(itub_defaults INTERFACE itub_warnings)
-if(TARGET itub_sanitizers)
-    target_link_libraries(itub_defaults INTERFACE itub_sanitizers)
+add_library(scrubtub_defaults INTERFACE)
+target_link_libraries(scrubtub_defaults INTERFACE scrubtub_warnings)
+if(TARGET scrubtub_sanitizers)
+    target_link_libraries(scrubtub_defaults INTERFACE scrubtub_sanitizers)
 endif()
 
 # --- Targets -----------------------------------------------------------------
 
 add_subdirectory(src)
-if(ITUB_BUILD_BENCH)
-    add_subdirectory(bench)
-endif()
-if(ITUB_BUILD_TESTS)
+if(SCRUBTUB_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

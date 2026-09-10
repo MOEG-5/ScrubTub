@@ -187,6 +187,6 @@
         "settled_latency_p50_ms": 258.95000000000005,
         "settled_latency_p95_ms": 360.21950000000004
     },
-    "tool": "itub-hoverbench",
+    "tool": "scrubtub-hoverbench",
     "version": "0.1.0"
 }

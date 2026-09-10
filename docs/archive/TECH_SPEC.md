@@ -1,3 +1,5 @@
+> Implementation update (2026-09-07): ScrubTub uses mpv for live hover previews. The Qt Multimedia prototype described below was rejected and removed; cached previews cover unavailable mpv.
+
 # Video catalogue — technical specification
 
 Status: implementation draft, 2026-09-06. Confirmed owner direction and milestone order are in [PLAN.md](PLAN.md). MUST indicates a requirement; numeric defaults are proposed settings to validate, not measured performance.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Milestone-3 catalogue layer: deterministic tags, live fuzzy search with
 // structured filters, and paged detail fetching. Included by Catalogue.cpp;
 // every function runs on the catalogue thread (TECH_SPEC.md sections 7, 8).
@@ -16,7 +16,7 @@
 
 #include <rapidfuzz/distance/Levenshtein.hpp>
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 
@@ -62,6 +62,9 @@ void buildSearchRecord(Database* db, qint64 videoId, SearchRecord* out)
             folded.append(f);
     }
     out->foldedTokens = folded;
+    out->foldedName = TagEngine::diacriticFold(out->fileName);
+    out->foldedPath = TagEngine::diacriticFold(out->relPath);
+    out->normName = TagEngine::normalize(out->fileName);
 }
 
 struct MatchResult {
@@ -75,16 +78,16 @@ MatchResult matchTokens(const SearchRecord& record,
                         const QStringList& queryTokens,
                         const QStringList& foldedQuery)
 {
+    Q_UNUSED(queryTokens);
     MatchResult result;
-    for (int qi = 0; qi < queryTokens.size(); ++qi) {
-        const QString& q = queryTokens.at(qi);
-        const QString fq = foldedQuery.at(qi);
+    // Name/path folds and the query folds are precomputed: renormalizing per
+    // token here dominated search cost (§8 runs on every keystroke).
+    for (int qi = 0; qi < foldedQuery.size(); ++qi) {
+        const QString& fq = foldedQuery.at(qi);
         int bestClass = -1;
         int bestDistance = -1;
         bool nameOnly = false;
-        // Exact/prefix/substring over the folded full strings and tokens.
-        const QString foldedName = TagEngine::diacriticFold(record.fileName);
-        const QString foldedPath = TagEngine::diacriticFold(record.relPath);
+        const int limit = TagEngine::editDistanceLimit(fq.size());
         for (int ti = 0; ti < record.foldedTokens.size(); ++ti) {
             const QString& token = record.foldedTokens.at(ti);
             int cls = -1;
@@ -95,31 +98,30 @@ MatchResult matchTokens(const SearchRecord& record,
                 cls = 1;
             else if (token.contains(fq))
                 cls = 2;
-            else {
-                const int limit = TagEngine::editDistanceLimit(fq.size());
-                if (limit > 0) {
-                    const int d = rapidfuzz::levenshtein_distance(
-                        token.toStdU32String(), fq.toStdU32String());
-                    if (d <= limit) {
-                        cls = 3;
-                        dist = d;
-                    }
+            else if (limit > 0
+                     && qAbs(token.size() - fq.size()) <= limit) {
+                // Levenshtein distance is at least the length difference, so
+                // the length check cannot reject a within-limit match.
+                const int d = rapidfuzz::levenshtein_distance(
+                    token.toStdU32String(), fq.toStdU32String());
+                if (d <= limit) {
+                    cls = 3;
+                    dist = d;
                 }
             }
             if (cls >= 0 && (bestClass < 0 || cls < bestClass
                              || (cls == bestClass && dist < bestDistance))) {
                 bestClass = cls;
                 bestDistance = dist;
-                Q_UNUSED(ti);
             }
         }
         // Substring across the whole folded name/path (multi-word queries).
         if (bestClass < 0 || bestClass > 2) {
-            if (foldedName.contains(fq)) {
+            if (record.foldedName.contains(fq)) {
                 bestClass = bestClass < 0 ? 2 : qMin(bestClass, 2);
                 bestDistance = 0;
                 nameOnly = true;
-            } else if (foldedPath.contains(fq) && bestClass < 0) {
+            } else if (record.foldedPath.contains(fq) && bestClass < 0) {
                 bestClass = 2;
                 bestDistance = 0;
             }
@@ -179,6 +181,12 @@ QString Catalogue::whereForFilters(const QuerySpec& spec, QStringList* wheres) c
         wheres->append(QStringLiteral("rating IS NULL"));
     else if (spec.ratingMode == 2)
         wheres->append(QStringLiteral("rating = %1").arg(spec.ratingValue));
+    else if (spec.ratingMode == 3)
+        wheres->append(QStringLiteral("rating IS NOT NULL"));
+    if (spec.ratingMin >= 0)
+        wheres->append(QStringLiteral("COALESCE(rating, 0) >= %1").arg(spec.ratingMin));
+    if (spec.ratingMax >= 0)
+        wheres->append(QStringLiteral("COALESCE(rating, 0) <= %1").arg(spec.ratingMax));
     if (spec.rootId >= 0)
         wheres->append(QStringLiteral("root_id = %1").arg(spec.rootId));
     if (!spec.folderPrefix.isEmpty())
@@ -205,8 +213,19 @@ void Catalogue::search(const QuerySpec& spec)
     // measure again; do not cap candidates or reduce typo tolerance instead.
     const quint64 generation = ++m_searchGeneration;
 
+    // Keep slider extents tied to the collection, not the current filtered hits.
+    QString boundsSql = QStringLiteral("SELECT MAX(duration_ms), MAX(size_bytes) FROM videos");
+    if (spec.rootId >= 0)
+        boundsSql += QStringLiteral(" WHERE root_id = %1").arg(spec.rootId);
+    Statement bounds = m_db->prepare(boundsSql.toUtf8().constData());
+    if (bounds.step())
+        emit filterBoundsReady(spec.rootId, bounds.int64(0), bounds.int64(1));
+
     // Visible query validation, never silent truncation (§8).
     QString validationError;
+    if (spec.ratingMin < -1 || spec.ratingMin > 5 || spec.ratingMax < -1 || spec.ratingMax > 5
+        || (spec.ratingMin >= 0 && spec.ratingMax >= 0 && spec.ratingMin > spec.ratingMax))
+        validationError = QStringLiteral("Rating range must be between 0 and 5, minimum first");
     if (spec.text.size() > 256)
         validationError = QStringLiteral("Query exceeds 256 characters");
     const QStringList queryTokens = splitQueryTokens(spec.text);
@@ -288,40 +307,40 @@ void Catalogue::search(const QuerySpec& spec)
     struct Candidate {
         qint64 id;
         MatchResult match;
+        QString normName; // precomputed sort key (normalize() is not cheap)
     };
     QVector<Candidate> candidates;
     while (st.step()) {
         if (generation != m_searchGeneration)
             return; // stale query: discard even if this raced completion (§8)
         const qint64 id = st.int64(0);
-        if (!m_searchRecords.contains(id))
+        auto recordIt = m_searchRecords.constFind(id);
+        if (recordIt == m_searchRecords.constEnd()) {
             refreshSearchRecord(id);
-        const SearchRecord& record = m_searchRecords.value(id);
+            recordIt = m_searchRecords.constFind(id);
+        }
+        const SearchRecord& record = recordIt.value();
         if (queryTokens.isEmpty()) {
-            candidates.append({id, MatchResult{}});
+            candidates.append({id, MatchResult{}, record.normName});
             continue;
         }
         const MatchResult match = matchTokens(record, queryTokens, foldedQuery);
         if (match.matched)
-            candidates.append({id, match});
+            candidates.append({id, match, record.normName});
     }
 
     if (!queryTokens.isEmpty() && !spec.userSort) {
         // Relevance (§8): match class, summed edit distance, filename before
         // folder-only matches, then normalized filename, then ID.
         std::sort(candidates.begin(), candidates.end(),
-                  [this](const Candidate& a, const Candidate& b) {
+                  [](const Candidate& a, const Candidate& b) {
                       if (a.match.worstClass != b.match.worstClass)
                           return a.match.worstClass < b.match.worstClass;
                       if (a.match.totalDistance != b.match.totalDistance)
                           return a.match.totalDistance < b.match.totalDistance;
                       if (a.match.nameMatched != b.match.nameMatched)
                           return a.match.nameMatched;
-                      const QString& an = m_searchRecords.value(a.id).fileName;
-                      const QString& bn = m_searchRecords.value(b.id).fileName;
-                      const int c = TagEngine::normalize(an)
-                                        .compare(TagEngine::normalize(bn),
-                                                 Qt::CaseInsensitive);
+                      const int c = a.normName.compare(b.normName);
                       if (c != 0)
                           return c < 0;
                       return a.id < b.id;
@@ -334,12 +353,14 @@ void Catalogue::search(const QuerySpec& spec)
     emit searchCompleted(generation, ordered, validationError);
 }
 
-void Catalogue::fetchRowsPage(const QList<qint64>& videoIds)
+void Catalogue::fetchRowsPage(const QList<qint64>& videoIds, quint64 generation)
 {
     QList<VideoRow> rows;
-    for (const qint64 id : videoIds)
-        rows.append(readRow(id));
-    emit rowsChanged(rows, false);
+    for (const qint64 id : videoIds) {
+        const auto row = readRow(id);
+        if (row.id > 0) rows.append(row);
+    }
+    emit rowsPageReady(rows, videoIds, generation);
 }
 
 void Catalogue::clearSearch()
@@ -525,4 +546,4 @@ void Catalogue::requestTags(qint64 videoId)
     emit tagsReady(videoId, tags);
 }
 
-} // namespace itub
+} // namespace scrubtub

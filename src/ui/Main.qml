@@ -1,283 +1,360 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 import QtQuick.Layouts
-import itub.media
+import scrubtub.media
 
 ApplicationWindow {
     id: window
-    width: 1280
-    height: 820
+    width: 1440
+    height: 900
     visible: true
-    title: qsTr("itub — Video Catalogue")
-    color: "#141418"
+    title: qsTr("ScrubTub")
+    minimumWidth: 720
+    minimumHeight: 500
+    font.pixelSize: 13
+    color: "#191b19"
+    palette.window: "#191b19"
+    palette.windowText: "#eeeee9"
+    palette.base: "#20221f"
+    palette.alternateBase: "#202429"
+    palette.text: "#eeeee9"
+    palette.button: "#292b27"
+    palette.buttonText: "#eeeee9"
+    palette.highlight: "#ddbe8b"
+    palette.highlightedText: "#191b19"
+    palette.mid: "#343a41"
+    palette.dark: "#101214"
+    palette.light: "#3b434c"
+    palette.placeholderText: "#9d9f97"
 
-    function statusText() {
-        const m = catalogueModel
-        if (m.scanState === "idle" || m.scanState === "complete")
-            return qsTr("%1 videos").arg(m.count)
-        return qsTr("%1 — discovered %2 · probed %3 · errors %4")
-            .arg(m.scanState).arg(m.discovered).arg(m.probed).arg(m.errors)
+    Shortcut { sequences: [StandardKey.Quit]; onActivated: window.close() }
+    Shortcut { sequence: "Ctrl+F"; onActivated: { sidebar.visible = true; searchField.forceActiveFocus() } }
+    Shortcut { sequence: "Ctrl+B"; onActivated: sidebar.visible = !sidebar.visible }
+    Shortcut { sequence: "Ctrl+,"; onActivated: settingsDialog.open() }
+    Component.onCompleted: searchDebounce.restart()
+    onActiveFocusItemChanged: {
+        revealFocusedItem(filterScroll)
+        revealFocusedItem(detailsScroll)
+    }
+    function revealFocusedItem(scrollView) {
+        const focused = window.activeFocusItem
+        if (!focused || !scrollView) return
+        let ancestor = focused.parent
+        while (ancestor && ancestor !== scrollView) ancestor = ancestor.parent
+        if (!ancestor) return
+        const flick = scrollView.contentItem
+        const y = focused.mapToItem(flick, 0, 0).y
+        const delta = y < 8 ? y - 8 : Math.max(0, y + focused.height + 8 - flick.height)
+        flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY + delta))
     }
 
-    ColumnLayout {
+    readonly property bool processing: catalogueModel.scanState === "enumerating"
+        || catalogueModel.scanState === "probing" || catalogueModel.scanState === "previews"
+    function statusText() {
+        const m = catalogueModel
+        if (m.scanState === "enumerating") return qsTr("Finding videos…")
+        if (m.scanState === "paused") return qsTr("Paused · %1 left").arg(m.remaining + m.previewsRemaining)
+        if (m.scanState === "cancelled") return qsTr("Stopped · %1 left").arg(m.remaining + m.previewsRemaining)
+        if (m.remaining > 0) return qsTr("%1 videos left").arg(m.remaining)
+        if (m.previewsRemaining > 0) return qsTr("Preparing previews · %1 left").arg(m.previewsRemaining)
+        if (m.failed > 0) return qsTr("%1 need attention").arg(m.failed)
+        if (m.scanState === "missing") return qsTr("Folder unavailable")
+        if (window.processing) return qsTr("Finishing previews…")
+        return ""
+    }
+
+    readonly property bool cachedTimelineEnabled: true
+
+    property string libraryView: "all"
+    property int selectedRoot: -1
+    property string selectedRootName: ""
+    readonly property string libraryTitle: selectedRoot >= 0 ? selectedRootName
+        : libraryView === "rated" ? qsTr("Rated videos")
+        : libraryView === "unrated" ? qsTr("Unrated videos")
+        : libraryView === "unavailable" ? qsTr("Unavailable videos") : qsTr("All videos")
+
+    function selectLibrary(view, rootId, rootName) {
+        libraryView = view
+        selectedRoot = rootId
+        selectedRootName = rootName
+        detailsVideoId = -1
+        hoverSession.disengage()
+        searchDebounce.restart()
+    }
+
+    component InputField: TextField {
+        implicitHeight: 36
+        leftPadding: 12
+        rightPadding: 12
+        color: "#eeeee9"
+        placeholderTextColor: "#9d9f97"
+        selectByMouse: true
+        background: Rectangle {
+            radius: 6
+            color: "#20221f"
+            border.color: parent.activeFocus ? "#ddbe8b" : "#373a34"
+        }
+    }
+    component SelectBox: ComboBox {
+        id: combo
+        implicitHeight: 36
+        leftPadding: 12
+        rightPadding: 30
+        background: Rectangle {
+            radius: 6
+            color: combo.hovered ? "#2e302b" : "#252724"
+            border.width: combo.activeFocus ? 1 : 0
+            border.color: "#ddbe8b"
+        }
+        indicator: Image {
+            source: "icons/chevron.svg"
+            width: 15; height: 15
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+
+
+    readonly property var libraryChoices: {
+        let choices = [ {label: qsTr("All videos"), view: "all", root: -1},
+                        {label: qsTr("Rated videos"), view: "rated", root: -1},
+                        {label: qsTr("Unrated videos"), view: "unrated", root: -1},
+                        {label: qsTr("Unavailable videos"), view: "unavailable", root: -1} ]
+        for (let i = 0; i < rootModel.count; ++i) {
+            const root = rootModel.get(i)
+            choices.push({label: root.rootName.replace(/\\/g, "/").split("/").filter(Boolean).pop() || root.rootName,
+                          view: "all", root: root.rootId})
+        }
+        return choices
+    }
+    property int detailsTab: 0
+    property bool detailsExpanded: true
+
+    SplitView {
+        id: workspace
         anchors.fill: parent
-        spacing: 0
-
-        ToolBar {
-            Layout.fillWidth: true
-            RowLayout {
-                anchors.fill: parent
-                spacing: 8
-
-                Button {
-                    text: qsTr("Add folder")
-                    onClicked: folderDialog.open()
-                }
-                Button {
-                    text: qsTr("Pause")
-                    onClicked: catalogue.pauseScanning()
-                }
-                Button {
-                    text: qsTr("Resume")
-                    onClicked: catalogue.resumeScanning()
-                }
-                Button {
-                    text: qsTr("Cancel scan")
-                    onClicked: catalogue.cancelScanning()
-                }
-                TextField {
-                    id: searchField
-                    Layout.preferredWidth: 260
-                    placeholderText: qsTr("Search filenames, paths, tags…")
-                    selectByMouse: true
-                    onTextChanged: searchDebounce.restart()
-                    color: searchError !== "" ? "#ff8a80" : "#f2f2f6"
-                }
-                ComboBox {
-                    id: sortCombo
-                    model: [qsTr("Date added"), qsTr("Name"), qsTr("Size"),
-                            qsTr("Duration"), qsTr("Resolution"), qsTr("Rating"),
-                            qsTr("Views"), qsTr("Modified"), qsTr("Last opened")]
-                    onActivated: {
-                        sortState.userSort = true
-                        searchDebounce.restart()
-                    }
-                }
-                Button {
-                    text: sortState.sortDescending ? "↓" : "↑"
-                    flat: true
-                    onClicked: {
-                        sortState.sortDescending = !sortState.sortDescending
-                        sortState.userSort = true
-                        searchDebounce.restart()
-                        saveSettings()
-                    }
-                }
-                Button {
-                    text: qsTr("Filters")
-                    flat: true
-                    onClicked: filtersPanel.visible = !filtersPanel.visible
-                }
-                Menu {
-                    id: fileMenu
-                    MenuItem {
-                        text: qsTr("Move selected to Trash…")
-                        onTriggered: trashDialog.open()
-                    }
-                    MenuItem {
-                        text: qsTr("Export catalogue backup…")
-                        onTriggered: exportDialog.open()
-                    }
-                    MenuItem {
-                        text: qsTr("Restore catalogue from backup…")
-                        onTriggered: importDialog.open()
-                    }
-                    MenuItem {
-                        text: qsTr("Clear all previews (%1)").arg(formatIec(cacheBytes))
-                        onTriggered: clearDialog.open()
-                    }
-                    MenuItem {
-                        text: qsTr("Refresh cache usage")
-                        onTriggered: catalogue.requestCacheUsage()
-                    }
-                }
-                Button {
-                    text: qsTr("File")
-                    flat: true
-                    onClicked: fileMenu.popup()
-                }
-                Item { Layout.fillWidth: true }
-                Label {
-                    text: window.statusText()
-                    color: "#c9c9d4"
-                }
-                CheckBox {
-                    text: qsTr("Cached previews only")
-                    checked: !hoverSession.enabled
-                    onToggled: {
-                        hoverSession.enabled = !checked
-                        saveSettings()
-                    }
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 400
-                    ToolTip.text: qsTr("When checked, hovering uses only cached storyboard frames and never reads the original file.")
-                }
-                CheckBox {
-                    id: startupRefreshCheck
-                    text: qsTr("Check folders on startup")
-                    checked: true
-                    onToggled: saveSettings()
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 400
-                    ToolTip.text: qsTr("Re-check all folders when the app starts: moved, added, and deleted videos are reconciled, and cached previews of vanished videos are cleaned up.")
-                }
-            }
+        orientation: Qt.Horizontal
+        handle: Rectangle {
+            implicitWidth: 6
+            color: SplitHandle.pressed ? "#ddbe8b" : SplitHandle.hovered ? "#787c70" : "#20221e"
         }
-
-        // Filters panel (§1): categories AND-combined, inclusive bounds.
         Rectangle {
-            id: filtersPanel
-            Layout.fillWidth: true
-            Layout.preferredHeight: visible ? filterRow.implicitHeight + 16 : 0
-            color: "#1c1c24"
-            visible: false
-
-            RowLayout {
-                id: filterRow
+            id: sidebar
+            objectName: "sidebar"
+            SplitView.preferredWidth: 264
+            SplitView.minimumWidth: 232
+            SplitView.maximumWidth: Math.min(480, window.width - 420)
+            color: "#141613"
+            ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 8
-                spacing: 10
-
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Resolution"); color: "#8b8b96"; font.pixelSize: 10 }
-                    ComboBox {
-                        id: resolutionCombo
-                        Layout.preferredWidth: 104
-                        font.pixelSize: 12
-                        model: ["any", "480", "720", "1080", "1440", "2160"]
-                        onActivated: searchDebounce.restart()
+                anchors.margins: 16
+                spacing: 12
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    SelectBox {
+                        id: libraryCombo
+                        objectName: "librarySelector"
+                        Layout.fillWidth: true
+                        model: window.libraryChoices
+                        textRole: "label"
+                        font.pixelSize: 21
+                        font.weight: Font.DemiBold
+                        leftPadding: 0
+                        background: Rectangle { color: "transparent"; radius: 6; border.width: libraryCombo.activeFocus ? 1 : 0; border.color: "#ddbe8b" }
+                        currentIndex: Math.max(0, window.libraryChoices.findIndex(c => c.root === window.selectedRoot && c.view === window.libraryView))
+                        Accessible.name: qsTr("Library or folder")
+                        onActivated: {
+                            const choice = window.libraryChoices[index]
+                            window.selectLibrary(choice.view, choice.root, choice.label)
+                        }
                     }
+                    ActionButton { objectName: "hideSidebar"; iconName: "sidebar"; flat: true; Accessible.name: qsTr("Hide sidebar (Ctrl+B)"); onClicked: sidebar.visible = false }
                 }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Rating"); color: "#8b8b96"; font.pixelSize: 10 }
-                    ComboBox {
-                        id: ratingCombo
-                        Layout.preferredWidth: 104
-                        font.pixelSize: 12
-                        model: [qsTr("any"), qsTr("unrated"), qsTr("rated"), "★1", "★2", "★3", "★4", "★5"]
-                        onActivated: searchDebounce.restart()
-                    }
-                }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Availability"); color: "#8b8b96"; font.pixelSize: 10 }
-                    ComboBox {
-                        id: availabilityCombo
-                        Layout.preferredWidth: 120
-                        font.pixelSize: 12
-                        model: ["any", "available", "unprobed", "missing", "unavailable"]
-                        onActivated: searchDebounce.restart()
-                    }
-                }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Min size MiB"); color: "#8b8b96"; font.pixelSize: 10 }
-                    TextField { id: sizeMinField; Layout.preferredWidth: 90; font.pixelSize: 12; selectByMouse: true; onTextEdited: searchDebounce.restart() }
-                }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Max size MiB"); color: "#8b8b96"; font.pixelSize: 10 }
-                    TextField { id: sizeMaxField; Layout.preferredWidth: 90; font.pixelSize: 12; selectByMouse: true; onTextEdited: searchDebounce.restart() }
-                }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Min s"); color: "#8b8b96"; font.pixelSize: 10 }
-                    TextField { id: durationMinField; Layout.preferredWidth: 70; font.pixelSize: 12; selectByMouse: true; onTextEdited: searchDebounce.restart() }
-                }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Max s"); color: "#8b8b96"; font.pixelSize: 10 }
-                    TextField { id: durationMaxField; Layout.preferredWidth: 70; font.pixelSize: 12; selectByMouse: true; onTextEdited: searchDebounce.restart() }
-                }
-                ColumnLayout {
-                    spacing: 2
-                    Label { text: qsTr("Min views"); color: "#8b8b96"; font.pixelSize: 10 }
-                    TextField { id: viewsMinField; Layout.preferredWidth: 70; font.pixelSize: 12; selectByMouse: true; onTextEdited: searchDebounce.restart() }
-                }
-                Button {
-                    Layout.alignment: Qt.AlignBottom
-                    text: qsTr("Reset")
-                    onClicked: filtersReset += 1
-                }
-            }
-        }
-
-        // Roots strip
-        ScrollView {
-            Layout.fillWidth: true
-            Layout.preferredHeight: rootRow.implicitHeight + 12
-            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-            RowLayout {
-                id: rootRow
-                x: 6
-                spacing: 6
-                Repeater {
-                    model: rootModel
-                    delegate: Rectangle {
-                        radius: 10
-                        color: "#26262e"
-                        implicitHeight: 30
-                        implicitWidth: rootLabel.implicitWidth + removeButton.implicitWidth + 28
+                RowLayout {
+                    Layout.fillWidth: true
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: statusLabel.text.length > 0
+                            spacing: 6
+                            Image {
+                                source: "icons/refresh.svg"
+                                Layout.preferredWidth: 14
+                                Layout.preferredHeight: 14
+                                visible: window.processing
+                                opacity: 0.75
+                                RotationAnimator on rotation {
+                                    from: 0; to: 360; duration: 1400
+                                    loops: Animation.Infinite
+                                    running: window.processing && window.visible
+                                }
+                                Accessible.ignored: true
+                            }
+                            Label {
+                                id: statusLabel
+                                objectName: "processingStatus"
+                                text: window.statusText()
+                                color: "#a4a69e"; font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                        }
                         Label {
-                            id: rootLabel
-                            anchors.verticalCenter: parent.verticalCenter
-                            x: 10
-                            text: rootName + (rootStatus !== "ok" ? " (" + rootStatus + ")" : "")
-                            color: rootStatus === "ok" ? "#e9e9f0" : "#ffb36b"
+                            objectName: "processedCount"
+                            text: qsTr("%1 videos ready").arg(catalogueModel.processed)
+                            color: "#a4a69e"; font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
                         }
-                        Button {
-                            id: rescanButton
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.right: parent.right
-                            anchors.rightMargin: 34
-                            flat: true
-                            text: "⟳"
-                            ToolTip.visible: hovered
-                            ToolTip.delay: 400
-                            ToolTip.text: qsTr("Force rescan: re-check every file and retry failed probes")
-                            onClicked: catalogue.rescanRoot(rootId, true)
-                        }
-                        Button {
-                            id: removeButton
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.right: parent.right
-                            anchors.rightMargin: 8
-                            flat: true
-                            text: "✕"
-                            ToolTip.visible: hovered
-                            ToolTip.delay: 400
-                            ToolTip.text: qsTr("Remove folder from catalogue (media files are not touched)")
-                            onClicked: catalogue.removeRoot(rootId)
+                    }
+                    ActionButton {
+                        objectName: "sortButton"
+                        iconName: "sort"
+                        flat: true
+                        Accessible.name: qsTr("Sort videos")
+                        onClicked: sortMenu.popup()
+                        Menu {
+                            id: sortMenu
+                            MenuItem { text: qsTr("Sort by"); enabled: false }
+                            Repeater {
+                                model: [qsTr("Date added"), qsTr("Name"), qsTr("Size"), qsTr("Duration"), qsTr("Resolution"), qsTr("Rating"), qsTr("Views"), qsTr("Modified"), qsTr("Last opened")]
+                                MenuItem {
+                                    required property int index
+                                    required property string modelData
+                                    text: modelData
+                                    checkable: true
+                                    checked: sortState.sortIndex === index
+                                    onTriggered: { sortState.sortIndex = index; sortState.userSort = true; searchDebounce.restart(); saveSettings() }
+                                }
+                            }
+                            MenuSeparator { }
+                            MenuItem {
+                                text: qsTr("Descending")
+                                checkable: true
+                                checked: sortState.sortDescending
+                                onTriggered: { sortState.sortDescending = !sortState.sortDescending; sortState.userSort = true; searchDebounce.restart(); saveSettings() }
+                            }
                         }
                     }
                 }
-                Item { Layout.fillWidth: true }
+                ScrollView {
+                    id: filterScroll
+                    objectName: "filterScroll"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    contentWidth: availableWidth
+                    clip: true
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    ColumnLayout {
+                        width: filterScroll.availableWidth
+                        spacing: 16
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Label { text: qsTr("Fuzzy search"); color: "#eeeee9" }
+                            InputField {
+                                id: searchField
+                                objectName: "catalogueSearch"
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Name, folder or tag")
+                                Accessible.name: qsTr("Fuzzy search catalogue")
+                                onTextChanged: searchDebounce.restart()
+                            }
+                            Label { text: qsTr("Tolerates typos · Ctrl F"); color: "#a4a69e"; font.pixelSize: 11 }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Label { text: qsTr("Tags"); color: "#eeeee9" }
+                            InputField {
+                                id: includeTagsField
+                                objectName: "includeTagsFilter"
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Include tags")
+                                Accessible.name: qsTr("Include all tags, separated by commas")
+                                onTextChanged: searchDebounce.restart()
+                            }
+                            InputField {
+                                id: excludeTagsField
+                                objectName: "excludeTagsFilter"
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Exclude tags")
+                                Accessible.name: qsTr("Exclude tags, separated by commas")
+                                onTextChanged: searchDebounce.restart()
+                            }
+                            Label { text: qsTr("Separate tags with commas"); color: "#a4a69e"; font.pixelSize: 11 }
+                        }
+                        RangeFilter {
+                            id: durationRange
+                            objectName: "durationFilter"
+                            Layout.fillWidth: true
+                            title: qsTr("Duration (seconds)")
+                            scaleMaximum: 120
+                            onEdited: searchDebounce.restart()
+                        }
+                        RangeFilter {
+                            id: sizeRange
+                            objectName: "sizeFilter"
+                            Layout.fillWidth: true
+                            title: qsTr("File size (MiB)")
+                            scaleMaximum: 1024
+                            onEdited: searchDebounce.restart()
+                        }
+                        RangeFilter {
+                            id: ratingRange
+                            objectName: "ratingFilter"
+                            Layout.fillWidth: true
+                            title: qsTr("Rating")
+                            suffix: qsTr("0 includes unrated videos")
+                            scaleMaximum: 5
+                            unlimited: false
+                            integerOnly: true
+                            onEdited: searchDebounce.restart()
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Label { text: qsTr("Resolution"); color: "#a4a69e" }
+                            SelectBox {
+                                id: resolutionCombo
+                                Layout.fillWidth: true
+                                Accessible.name: qsTr("Resolution")
+                                model: [qsTr("Any resolution"), "480", "720", "1080", "1440", "2160"]
+                                onActivated: searchDebounce.restart()
+                            }
+                            InputField {
+                                id: viewsMinField
+                                Layout.fillWidth: true
+                                placeholderText: qsTr("Minimum views")
+                                Accessible.name: qsTr("Minimum views")
+                                validator: IntValidator { bottom: 0 }
+                                onTextEdited: searchDebounce.restart()
+                            }
+                        }
+                    }
+                }
+                ActionButton { objectName: "resetFilters"; text: qsTr("Reset search and filters"); iconName: "refresh"; flat: true; Layout.fillWidth: true; onClicked: filtersReset += 1 }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#2d3029" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    ActionButton { text: qsTr("Add folder"); iconName: "plus"; Layout.fillWidth: true; onClicked: folderDialog.open() }
+                    ActionButton { text: qsTr("Settings"); flat: true; onClicked: settingsDialog.open() }
+                }
             }
         }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+        ColumnLayout {
+            SplitView.fillWidth: true
             spacing: 0
-
-            // Central virtual grid
             GridView {
                 id: grid
+                objectName: "videoGrid"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 model: catalogueModel
@@ -286,11 +363,48 @@ ApplicationWindow {
                 clip: true
                 pixelAligned: true
                 keyNavigationEnabled: true
-                cellWidth: cardSize
-                cellHeight: Math.round(cardSize * 0.5625) + 66
-                property int cardSize: 240
+                activeFocusOnTab: true
+                onActiveFocusChanged: {
+                    if (activeFocus) {
+                        if (currentIndex < 0 && count > 0) currentIndex = 0
+                        if (currentItem) currentItem.inspect()
+                    }
+                }
+                onCurrentItemChanged: if (activeFocus && currentItem) currentItem.inspect()
+                currentIndex: -1
+                cellWidth: width / Math.max(width >= 420 ? 2 : 1, Math.floor(width / cardSize))
+                cellHeight: Math.round(cellWidth * 0.625) + 70
+                property int cardSize: 280
 
                 boundsBehavior: Flickable.StopAtBounds
+                maximumFlickVelocity: 6500
+                flickDeceleration: 2200
+                MouseArea {
+                    parent: grid
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    // Unlike WheelHandler's blocking event point, MouseArea
+                    // forwards rejected events. Leave touchpad gestures to Qt.
+                    scrollGestureEnabled: false
+                    onWheel: event => {
+                        if (event.modifiers !== Qt.NoModifier) {
+                            event.accepted = false
+                            return
+                        }
+                        // A mouse wheel may report angles, pixels, or both.
+                        // Feed every form into the same coasting motion.
+                        const ticks = event.angleDelta.y !== 0 ? event.angleDelta.y / 120 : event.pixelDelta.y / 40
+                        if (ticks === 0) { event.accepted = false; return }
+                        // Scale travel, rather than velocity, with partial wheel
+                        // ticks so high-resolution wheels don't fall below the
+                        // native flick velocity threshold.
+                        const impulse = Math.sign(ticks) * Math.sqrt(Math.abs(ticks)) * 900
+                        const carry = grid.flicking && impulse * grid.verticalVelocity < 0 ? -grid.verticalVelocity : 0
+                        grid.flick(0, Math.max(-grid.maximumFlickVelocity, Math.min(grid.maximumFlickVelocity, carry + impulse)))
+                        event.accepted = true
+                    }
+                }
+                Keys.onEscapePressed: { window.detailsVideoId = -1; currentIndex = -1; hoverSession.disengage() }
 
                 delegate: VideoCard {
                     width: grid.cellWidth
@@ -310,100 +424,229 @@ ApplicationWindow {
 
                 ScrollBar.vertical: ScrollBar { }
 
-                Label {
+                ColumnLayout {
                     anchors.centerIn: parent
                     visible: catalogueModel.count === 0
-                    text: qsTr("No videos yet.\nAdd a folder to start discovery.")
-                    horizontalAlignment: Text.AlignHCenter
-                    color: "#8b8b96"
+                    spacing: 14
+                    Label {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: rootModel.count === 0 ? qsTr("Your archive starts here") : qsTr("No matching videos")
+                        font.pixelSize: 26
+                        font.weight: Font.DemiBold
+                    }
+                    Label {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: rootModel.count === 0
+                            ? qsTr("Add a folder to browse, scrub, and organise your collection.")
+                            : qsTr("Try another search or adjust your filters.")
+                        color: "#a4a69e"
+                    }
+                    ActionButton {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: qsTr("Add folder")
+                        visible: rootModel.count === 0
+                        onClicked: folderDialog.open()
+                    }
                 }
             }
 
-            // Details panel
+            Rectangle { visible: window.detailsVideoId >= 0 && window.detailsExpanded; Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#2d3029" }
+            RowLayout {
+                objectName: "detailsTabs"
+                visible: window.detailsVideoId >= 0 && window.detailsExpanded
+                Layout.fillWidth: true
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.preferredHeight: 48
+                spacing: 4
+                Repeater {
+                    model: [qsTr("Details"), qsTr("Tags"), qsTr("File info")]
+                    ActionButton {
+                        required property int index
+                        required property string modelData
+                        text: modelData
+                        objectName: "detailsTab" + index
+                        flat: true
+                        enabled: window.detailsVideoId >= 0
+                        selected: window.detailsExpanded && window.detailsVideoId >= 0 && window.detailsTab === index
+                        onClicked: { window.detailsTab = index; window.detailsExpanded = true }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                ActionButton {
+                    visible: window.detailsVideoId >= 0 && window.detailsExpanded
+                    text: qsTr("Hide panel")
+                    flat: true
+                    onClicked: { window.detailsExpanded = false; hoverSession.disengage() }
+                }
+            }
             Rectangle {
                 id: detailsPanel
-                Layout.preferredWidth: 300
-                Layout.fillHeight: true
-                color: "#1a1a20"
-                visible: detailsVideoId >= 0
-
-                ColumnLayout {
+                objectName: "detailsPanel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: window.height < 760 ? 220 : 256
+                color: "#20221e"
+                visible: detailsVideoId >= 0 && window.detailsExpanded
+                RowLayout {
                     anchors.fill: parent
-                    anchors.margins: 10
-                    spacing: 6
-
-                    Label {
-                        text: detailsName
-                        wrapMode: Text.Wrap
-                        color: "#f2f2f6"
-                        font.pixelSize: 15
+                    anchors.margins: 20
+                    spacing: 24
+                    ColumnLayout {
+                        Layout.preferredWidth: window.width < 1100 ? 176 : 240
+                        Layout.fillHeight: true
+                        spacing: 4
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Image {
+                                anchors.fill: parent
+                                source: window.detailsPosterSource
+                                sourceSize.width: 320
+                                asynchronous: true
+                                fillMode: Image.PreserveAspectFit
+                            }
+                            HoverFrameItem {
+                                anchors.fill: parent
+                                visible: scrubSlider.engaged && hoverSession.videoId === detailsVideoId && hoverSession.lastFramePtsMs >= 0
+                                frame: hoverSession.lastFrame
+                            }
+                        }
+                    Slider {
+                        id: scrubSlider
                         Layout.fillWidth: true
+                        Accessible.name: qsTr("Video preview timeline")
+                        focusPolicy: Qt.StrongFocus
+                        stepSize: 1000
+                        from: 0
+                        to: detailsDurationMs > 0 ? detailsDurationMs : 1
+                        property bool engaged: false
+                        onMoved: {
+                            if (detailsVideoId > 0 && detailsDurationMs > 0) {
+                                if (!engaged || hoverSession.videoId !== detailsVideoId) {
+                                    engaged = true
+                                    catalogue.hoverEngage(detailsVideoId)
+                                } else {
+                                    hoverSession.scrub(value)
+                                }
+                            }
+                        }
+                        onActiveFocusChanged: if (!activeFocus && engaged) {
+                            engaged = false
+                            if (hoverSession.videoId === detailsVideoId)
+                                hoverSession.disengage()
+                        }
+                        Connections {
+                            target: catalogue
+                            function onHoverSourceReady(id, revision, path, duration) {
+                                if (scrubSlider.engaged && id === detailsVideoId)
+                                    hoverSession.engage(id, revision, path, duration,
+                                                        Math.round(scrubSlider.value))
+                            }
+                        }
                     }
-                    DetailRow { label: qsTr("Path"); value: detailsPath }
-                    DetailRow { label: qsTr("Size"); value: detailsSizeBytes + " bytes" }
-                    DetailRow { label: qsTr("Duration"); value: detailsDuration }
-                    DetailRow { label: qsTr("Resolution"); value: detailsResolution }
-                    DetailRow { label: qsTr("Codec"); value: detailsCodec }
-                    DetailRow { label: qsTr("Views"); value: detailsViews }
-                    DetailRow { label: qsTr("Status"); value: detailsAvailability + " / " + detailsProbeStatus }
-                    DetailRow { label: qsTr("Probe detail"); value: detailsProbeError }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: 8
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label {
+                                text: detailsName
+                                elide: Text.ElideMiddle
+                                color: "#eeeee9"
+                                font.pixelSize: 15
+                                Layout.fillWidth: true
+                                ToolTip.visible: nameHover.hovered
+                                ToolTip.text: text
+                                HoverHandler { id: nameHover }
+                            }
+                            ActionButton { text: qsTr("Open video"); iconName: "play"; primary: true; onClicked: catalogue.openInDefaultPlayer(detailsVideoId) }
+                        }
+                        ScrollView {
+                            id: detailsScroll
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            contentWidth: availableWidth
+                            clip: true
+                            ColumnLayout {
+                                width: detailsScroll.availableWidth
+                                spacing: 8
+                                ColumnLayout {
+                                    visible: window.detailsTab === 0
+                                    Layout.fillWidth: true
+                                    spacing: 8
+                                    Label { text: [detailsDuration, detailsResolution, formatIec(Number(detailsSizeBytes))].join(" · "); color: "#a4a69e"; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                                    RowLayout {
+                                        spacing: 4
+                                        Label { text: qsTr("Rating"); color: "#a4a69e"; Layout.rightMargin: 12 }
+                                        Repeater {
+                                            model: 5
+                                            ActionButton {
+                                                required property int index
+                                                implicitWidth: 30; implicitHeight: 32
+                                                leftPadding: 6; rightPadding: 6
+                                                iconName: "star"
+                                                icon.color: index < window.detailsRating ? "#ddbe8b" : "#96998f"
+                                                flat: true
+                                                Accessible.name: qsTr("Rate %1 of 5 stars").arg(index + 1)
+                                                onClicked: { catalogue.setRating(detailsVideoId, index + 1); window.detailsRating = index + 1 }
+                                            }
+                                        }
+                                    }
+                                    Label { text: qsTr("%1 views").arg(detailsViews); color: "#a4a69e" }
+                    ActionButton {
+                        text: qsTr("Video options…")
+                        flat: true
+                        onClicked: videoMenu.popup()
+                        Menu {
+                            id: videoMenu
+                            MenuItem { text: qsTr("Regenerate automatic tags"); onTriggered: catalogue.regenerateAutoTags(detailsVideoId) }
+                            MenuItem { text: qsTr("Reset suppressed tags"); onTriggered: catalogue.resetSuppressions() }
+                            MenuItem { text: qsTr("Clear rating"); onTriggered: { catalogue.setRating(detailsVideoId, 0); window.detailsRating = 0 } }
+                            MenuSeparator { }
+                            MenuItem { text: qsTr("Move to Trash…"); onTriggered: window.confirmDelete() }
+                        }
+                    }
 
-                    Label { text: qsTr("Tags"); color: "#8b8b96" }
+                                }
+                                ColumnLayout {
+                                    visible: window.detailsTab === 1
+                                    Layout.fillWidth: true
+                                    spacing: 8
                     Flow {
                         Layout.fillWidth: true
                         spacing: 4
                         Repeater {
                             model: detailsTags
-                            delegate: Rectangle {
+                            delegate: ActionButton {
                                 required property var modelData
-                                width: chipRow.implicitWidth + 12
-                                height: 22
-                                radius: 11
-                                color: modelData.origin === "manual" ? "#2b3a55" : "#26262e"
-                                border.color: modelData.suppressed ? "#5a3a3a" : "transparent"
-                                Row {
-                                    id: chipRow
-                                    anchors.centerIn: parent
-                                    spacing: 4
-                                    Label {
-                                        text: modelData.label
-                                        color: modelData.suppressed ? "#777" : "#e9e9f0"
-                                        font.pixelSize: 11
+                                objectName: "tagAction"
+                                implicitHeight: 28
+                                leftPadding: 8; rightPadding: 8
+                                text: modelData.label + (modelData.suppressed ? qsTr(" (suppressed)") : "")
+                                font.pixelSize: 11
+                                palette.buttonText: modelData.suppressed ? "#a4a69e" : "#eeeee9"
+                                Accessible.name: qsTr("Tag %1: open actions").arg(text)
+                                onClicked: tagMenu.popup()
+                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: tagMenu.popup() }
+                                Menu {
+                                    id: tagMenu
+                                    MenuItem {
+                                        text: modelData.origin === "manual" ? qsTr("Remove tag") : qsTr("Suppress automatic tag")
+                                        enabled: !modelData.suppressed
+                                        onTriggered: {
+                                            if (modelData.origin === "manual") catalogue.removeTag(detailsVideoId, modelData.tagId)
+                                            else catalogue.suppressAutoTag(detailsVideoId, modelData.tagId)
+                                        }
                                     }
-                                    Label {
-                                        text: modelData.origin === "manual" ? "M"
-                                              : modelData.origin === "technical" ? "T" : "A"
-                                        color: "#6f6f7a"
-                                        font.pixelSize: 9
-                                    }
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    acceptedButtons: Qt.RightButton
-                                    onClicked: {
-                                        if (modelData.origin === "manual")
-                                            catalogue.removeTag(detailsVideoId, modelData.tagId)
-                                        else
-                                            catalogue.suppressAutoTag(detailsVideoId, modelData.tagId)
-                                    }
-                                }
-                                ToolTip.visible: chipHover.containsMouse
-                                ToolTip.delay: 400
-                                ToolTip.text: qsTr("Right-click: %1").arg(
-                                    modelData.origin === "manual"
-                                        ? qsTr("remove manual tag")
-                                        : qsTr("suppress automatic tag"))
-                                MouseArea {
-                                    id: chipHover
-                                    anchors.fill: parent
-                                    hoverEnabled: true
                                 }
                             }
                         }
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        TextField {
+                        InputField {
                             id: tagField
                             Layout.fillWidth: true
                             placeholderText: qsTr("Add tag")
@@ -416,97 +659,167 @@ ApplicationWindow {
                             }
                         }
                     }
-                    RowLayout {
-                        Button {
-                            flat: true
-                            text: qsTr("Regenerate automatic tags")
-                            onClicked: catalogue.regenerateAutoTags(detailsVideoId)
-                        }
-                        Button {
-                            flat: true
-                            text: qsTr("Reset suppressed")
-                            onClicked: catalogue.resetSuppressions()
-                        }
-                    }
 
-                    Item { Layout.fillHeight: true }
-
-                    Button {
-                        Layout.fillWidth: true
-                        text: qsTr("Open in default player")
-                        onClicked: catalogue.openInDefaultPlayer(detailsVideoId)
-                    }
-                    Button {
-                        Layout.fillWidth: true
-                        text: qsTr("Precompute timeline preview")
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 400
-                        ToolTip.text: qsTr("Generate the 24-frame cached storyboard for precise cached scrubbing.")
-                        onClicked: catalogue.requestStoryboard(detailsVideoId)
-                    }
-                    // Keyboard-equivalent scrubbing (§6): a slider driving the
-                    // same paused-player session as pointer hover.
-                    Slider {
-                        id: scrubSlider
-                        Layout.fillWidth: true
-                        from: 0
-                        to: detailsDurationMs > 0 ? detailsDurationMs : 1
-                        property bool engaged: false
-                        onMoved: {
-                            if (detailsVideoId > 0 && detailsDurationMs > 0) {
-                                if (!engaged) {
-                                    engaged = true
-                                    hoverSession.engage(detailsVideoId, detailsRevision,
-                                                        "", detailsDurationMs)
-                                    // Path arrives via hoverSourceReady.
-                                    catalogue.hoverEngage(detailsVideoId)
                                 }
-                                hoverSession.scrub(value)
+                                ColumnLayout {
+                                    visible: window.detailsTab === 2
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    DetailRow { label: qsTr("Path"); value: detailsPath }
+                                    GridLayout {
+                                        columns: width > 650 ? 3 : 2
+                                        Layout.fillWidth: true
+                                        columnSpacing: 24
+                                        rowSpacing: 6
+                                        DetailRow { label: qsTr("Size"); value: formatIec(Number(detailsSizeBytes)) }
+                                        DetailRow { label: qsTr("Duration"); value: detailsDuration }
+                                        DetailRow { label: qsTr("Display size"); value: detailsResolution }
+                                        DetailRow { label: qsTr("Codec"); value: detailsCodec }
+                                        DetailRow { label: qsTr("Coded size"); value: fileInfo.codedWidth > 0 ? fileInfo.codedWidth + "×" + fileInfo.codedHeight : "?" }
+                                        DetailRow { label: qsTr("Rotation"); value: fileInfo.rotation !== undefined && fileInfo.rotation !== null ? fileInfo.rotation + "°" : "?" }
+                                        DetailRow { label: qsTr("Modified"); value: formatDate(fileInfo.modified) }
+                                        DetailRow { label: qsTr("Added"); value: formatDate(fileInfo.added) }
+                                        DetailRow { label: qsTr("Last opened"); value: formatDate(fileInfo.lastOpened) }
+                                        DetailRow { label: qsTr("Views"); value: detailsViews }
+                                        DetailRow { label: qsTr("Availability"); value: detailsAvailability }
+                                        DetailRow { label: qsTr("Probe"); value: detailsProbeStatus }
+                                    }
+                                    Label { text: detailsProbeError; visible: text !== ""; wrapMode: Text.Wrap; color: "#edaaa0"; Layout.fillWidth: true }
+                                }
                             }
-                        }
-                        onPressedChanged: if (!pressed) {
-                            engaged = false
-                            hoverSession.disengage()
-                        }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Button {
-                            text: qsTr("Clear rating")
-                            onClicked: catalogue.setRating(detailsVideoId, 0)
                         }
                     }
                 }
             }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 28
+                Layout.rightMargin: 28
+                Layout.preferredHeight: 36
+                ActionButton { objectName: "showSidebar"; visible: !sidebar.visible; iconName: "sidebar"; text: qsTr("Show sidebar"); flat: true; onClicked: sidebar.visible = true }
+                Label { id: searchStatus; text: searchError; color: "#edaaa0"; elide: Text.ElideRight; Layout.fillWidth: true }
+                Label { text: qsTr("Hover to scrub · Double-click to open"); color: "#a4a69e"; font.pixelSize: 11 }
+                Slider {
+                    Layout.preferredWidth: 92
+                    from: 220; to: 380; stepSize: 20
+                    value: grid.cardSize
+                    Accessible.name: qsTr("Thumbnail size")
+                    onMoved: { grid.cardSize = value; saveSettings() }
+                }
+            }
+            Label { id: errorLabel; visible: text !== ""; text: ""; color: "#edaaa0"; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.margins: 12 }
+        }
+    }
+
+    Dialog {
+        id: settingsDialog
+        title: qsTr("Settings")
+        padding: 24
+        background: Rectangle { color: "#20221e"; radius: 10; border.color: "#4d5046" }
+        anchors.centerIn: parent
+        width: 560
+        height: Math.min(window.height - 60, 680)
+        modal: false
+        standardButtons: Dialog.Close
+        onOpened: catalogue.requestCacheUsage()
+        ScrollView {
+            anchors.fill: parent
+            contentWidth: availableWidth
+            ColumnLayout {
+                width: parent.width
+                spacing: 12
+                Label { text: qsTr("Browsing"); font.pixelSize: 17; font.weight: Font.DemiBold }
+                CheckBox {
+                    text: qsTr("Cached previews only")
+                    checked: !hoverSession.enabled
+                    onToggled: { hoverSession.enabled = !checked; saveSettings() }
+                }
+                CheckBox {
+                    id: startupRefreshCheck
+                    text: qsTr("Check folders on startup")
+                    checked: true
+                    onToggled: saveSettings()
+                }
+                RowLayout {
+                    Label { text: qsTr("Thumbnail size") }
+                    Slider {
+                        from: 200; to: 360; stepSize: 20
+                        value: grid.cardSize
+                        Accessible.name: qsTr("Thumbnail size")
+                        onMoved: { grid.cardSize = value; saveSettings() }
+                    }
+                }
+                Label { text: qsTr("Folders"); font.pixelSize: 17; font.weight: Font.DemiBold }
+        // Roots strip
+        ScrollView {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(160, rootRow.implicitHeight + 12)
+            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+            ColumnLayout {
+                id: rootRow
+                x: 6
+                spacing: 6
+                Repeater {
+                    model: rootModel
+                    delegate: Rectangle {
+                        radius: 10
+                        color: "#30332b"
+                        implicitHeight: 30
+                        implicitWidth: 488
+                        Label {
+                            id: rootLabel
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: 10
+                            width: 350
+                            elide: Text.ElideMiddle
+                            text: rootName + (rootStatus !== "ok" ? " (" + rootStatus + ")" : "")
+                            color: rootStatus === "ok" ? "#eeeee9" : "#ffb36b"
+                        }
+                        ActionButton {
+                            id: rescanButton
+                            Accessible.name: qsTr("Rescan folder %1").arg(rootName)
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 44
+                            flat: true
+                            iconName: "refresh"
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 400
+                            ToolTip.text: qsTr("Force rescan: re-check every file and retry failed probes")
+                            onClicked: catalogue.rescanRoot(rootId, true)
+                        }
+                        ActionButton {
+                            id: removeButton
+                            Accessible.name: qsTr("Remove folder %1 from catalogue").arg(rootName)
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 8
+                            flat: true
+                            iconName: "close"
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 400
+                            ToolTip.text: qsTr("Remove folder from catalogue (media files are not touched)")
+                            onClicked: catalogue.removeRoot(rootId)
+                        }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
         }
 
-        // Trash / cache state line
-        Label {
-            Layout.fillWidth: true
-            Layout.margins: 4
-            color: "#8b8b96"
-            font.pixelSize: 12
-            text: cacheBytes >= 0 ? qsTr("Preview cache: %1").arg(formatIec(cacheBytes)) : ""
-        }
 
-        // Search validation and result count (visible, never silent — §8).
-        Label {
-            id: searchStatus
-            Layout.fillWidth: true
-            Layout.margins: 4
-            color: searchError !== "" ? "#ff8a80" : "#8b8b96"
-            font.pixelSize: 12
-            text: searchError !== "" ? searchError
-                 : (resultCount >= 0 ? qsTr("%1 results").arg(resultCount) : "")
-        }
-
-        Label {
-            id: errorLabel
-            Layout.fillWidth: true
-            Layout.margins: 4
-            color: "#ff8a80"
-            font.pixelSize: 12
-            text: ""
+                RowLayout {
+                    ActionButton { text: qsTr("Add folder"); onClicked: folderDialog.open() }
+                    ActionButton { text: qsTr("Pause scan"); onClicked: catalogue.pauseScanning() }
+                    ActionButton { text: qsTr("Resume"); onClicked: catalogue.resumeScanning() }
+                    ActionButton { text: qsTr("Cancel scan"); onClicked: catalogue.cancelScanning() }
+                }
+                Label { text: qsTr("Catalogue & storage"); font.pixelSize: 17; font.weight: Font.DemiBold }
+                Label { text: qsTr("Preview cache: %1").arg(formatIec(cacheBytes)); color: "#a4a69e" }
+                ActionButton { text: qsTr("Export catalogue backup…"); onClicked: exportDialog.open() }
+                ActionButton { text: qsTr("Restore catalogue from backup…"); onClicked: importDialog.open() }
+                ActionButton { text: qsTr("Clear generated previews…"); onClicked: clearDialog.open() }
+            }
         }
     }
 
@@ -525,9 +838,34 @@ ApplicationWindow {
         return (bytes / mib).toFixed(1) + " MiB"
     }
 
+    Timer {
+        interval: 2000
+        running: settingsDialog.visible
+        repeat: true
+        onTriggered: catalogue.requestCacheUsage()
+    }
+    property var fileInfo: ({})
+    function formatDate(value) {
+        return value > 0 ? new Date(value).toLocaleString(Qt.locale(), Locale.ShortFormat) : "—"
+    }
+    function confirmDelete() {
+        trashDialog.videoId = detailsVideoId
+        trashDialog.fileName = detailsName
+        trashDialog.filePath = detailsPath
+        trashDialog.fileSize = formatIec(Number(detailsSizeBytes))
+        trashDialog.open()
+    }
     property real cacheBytes: -1
     Connections {
         target: catalogue
+        function onFileInfoReady(videoId, info) {
+            if (videoId === detailsVideoId) {
+                fileInfo = info
+                if (info.path) detailsPath = info.path
+            }
+            if (trashDialog.visible && videoId === trashDialog.videoId && info.path)
+                trashDialog.filePath = info.path
+        }
         function onCacheUsageReady(bytes) { cacheBytes = bytes }
         function onBackupImported() {
             errorLabel.text = ""
@@ -546,39 +884,40 @@ ApplicationWindow {
                 const keys = ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"]
                 const idx = keys.indexOf(settings.sortKey)
                 if (idx >= 0)
-                    sortCombo.currentIndex = idx
+                    sortState.sortIndex = idx
             }
         }
     }
     function saveSettings() {
         catalogue.saveUiSettings({
             cardSize: grid.cardSize,
-            sortKey: ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"][sortCombo.currentIndex],
+            sortKey: ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"][sortState.sortIndex],
             sortDescending: sortState.sortDescending,
             cachedOnly: !hoverSession.enabled,
             startupRefresh: startupRefreshCheck.checked
         })
-    }
-    Connections {
-        target: sortCombo
-        function onActivated(i) { saveSettings() }
     }
 
     // Explicit Trash: names the full paths, count, and size; requires
     // confirmation for that selection (§3).
     Dialog {
         id: trashDialog
-        title: qsTr("Move to Trash")
+        anchors.centerIn: parent
+        property int videoId: -1
+        property string fileName: ""
+        property string filePath: ""
+        property string fileSize: ""
+        title: qsTr("Delete?")
         modal: true
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        standardButtons: Dialog.Yes | Dialog.No
         width: 480
         ColumnLayout {
             width: parent.width
             Label {
-                text: detailsVideoId < 0
+                text: trashDialog.videoId < 0
                     ? qsTr("Select a video first.")
                     : qsTr("Move %1 (%2) to the system Trash?\nPath: %3")
-                        .arg(detailsName).arg(detailsSizeBytes).arg(detailsPath)
+                        .arg(trashDialog.fileName).arg(trashDialog.fileSize).arg(trashDialog.filePath)
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
@@ -591,9 +930,9 @@ ApplicationWindow {
             }
         }
         onAccepted: {
-            if (detailsVideoId >= 0) {
+            if (trashDialog.videoId >= 0) {
                 hoverSession.disengage()
-                catalogue.trashVideos([detailsVideoId])
+                catalogue.trashVideos([trashDialog.videoId])
             }
         }
     }
@@ -601,21 +940,27 @@ ApplicationWindow {
     FileDialog {
         id: exportDialog
         fileMode: FileDialog.SaveFile
-        nameFilters: [qsTr("Catalogue backups (*.db)")] 
+        defaultSuffix: "db"
+        nameFilters: [qsTr("Catalogue backups (*.db)")]
         onAccepted: catalogue.exportBackup(selectedFile)
     }
     FileDialog {
         id: importDialog
         fileMode: FileDialog.OpenFile
-        nameFilters: [qsTr("Catalogue backups (*.db)")]
+        nameFilters: [qsTr("Catalogue backups (*.db *.sqlite *.sqlite3)"), qsTr("All files (*)")]
         onAccepted: catalogue.importBackup(selectedFile)
     }
     Dialog {
         id: clearDialog
+        anchors.centerIn: parent
+        width: Math.min(window.width - 48, 480)
         title: qsTr("Clear previews")
         modal: true
         standardButtons: Dialog.Ok | Dialog.Cancel
-        Label { text: qsTr("Delete all generated posters and storyboards? They regenerate lazily. Ratings, tags, and view counts are never touched.") ; wrapMode: Text.Wrap }
+        contentItem: Label {
+            text: qsTr("Delete all generated thumbnails and preview frames? They will be rebuilt in the background. Ratings, tags, and view counts are kept.")
+            wrapMode: Text.Wrap
+        }
         onAccepted: catalogue.clearPreviews()
     }
 
@@ -625,6 +970,7 @@ ApplicationWindow {
     property int filtersReset: 0
     QtObject {
         id: sortState
+        property int sortIndex: 0
         property bool sortDescending: false
         property bool userSort: false
     }
@@ -634,61 +980,69 @@ ApplicationWindow {
         onTriggered: window.runSearch()
     }
     onFiltersResetChanged: {
+        searchField.clear()
+        includeTagsField.clear()
+        excludeTagsField.clear()
         resolutionCombo.currentIndex = 0
-        ratingCombo.currentIndex = 0
-        availabilityCombo.currentIndex = 0
-        sizeMinField.text = ""
-        sizeMaxField.text = ""
-        durationMinField.text = ""
-        durationMaxField.text = ""
-        viewsMinField.text = ""
+        durationRange.reset()
+        sizeRange.reset()
+        ratingRange.reset()
+        viewsMinField.clear()
         searchDebounce.restart()
     }
 
-    function ratingModeFor(choice) {
-        if (choice === qsTr("unrated")) return 1
-        if (choice === qsTr("rated")) return 3
-        if (choice.startsWith("★")) return 2
-        return 0
-    }
-    function ratingValueFor(choice) {
-        if (choice.startsWith("★")) return choice.length - 1
-        return 0
-    }
-    function runSearch() {
+    function querySpec() {
+        if (!durationRange.valid || !sizeRange.valid || !ratingRange.valid) return null
         const spec = {
             text: searchField.text,
-            sortKey: ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"][sortCombo.currentIndex],
+            includeAllTags: includeTagsField.text.split(",").map(t => t.trim()).filter(Boolean),
+            excludeTags: excludeTagsField.text.split(",").map(t => t.trim()).filter(Boolean),
+            sortKey: ["added","name","size","duration","resolution","rating","views","mtime","lastOpened"][sortState.sortIndex],
             sortDescending: sortState.sortDescending,
+            rootId: selectedRoot,
             userSort: sortState.userSort
         }
-        const preset = resolutionCombo.currentText
-        if (preset !== "any") spec.resolutionPreset = preset
-        const rm = ratingModeFor(ratingCombo.currentText)
-        if (rm === 1) spec.ratingMode = 1
-        else if (rm === 2) { spec.ratingMode = 2; spec.ratingValue = ratingValueFor(ratingCombo.currentText) }
-        else if (rm === 3) spec.ratingMode = 3
-        if (availabilityCombo.currentText !== "any")
-            spec.availability = [availabilityCombo.currentText]
-        const minMiB = parseFloat(sizeMinField.text)
-        if (!isNaN(minMiB)) spec.sizeMin = Math.round(minMiB * 1048576)
-        const maxMiB = parseFloat(sizeMaxField.text)
-        if (!isNaN(maxMiB)) spec.sizeMax = Math.round(maxMiB * 1048576)
-        const minS = parseFloat(durationMinField.text)
-        if (!isNaN(minS)) spec.durationMinMs = Math.round(minS * 1000)
-        const maxS = parseFloat(durationMaxField.text)
-        if (!isNaN(maxS)) spec.durationMaxMs = Math.round(maxS * 1000)
-        const minViews = parseInt(viewsMinField.text)
-        if (!isNaN(minViews)) spec.viewsMin = minViews
+        if (resolutionCombo.currentIndex > 0) spec.resolutionPreset = resolutionCombo.currentText
+        if (sizeRange.minimum > 0) spec.sizeMin = Math.round(sizeRange.minimum * 1048576)
+        if (sizeRange.maximum >= 0) spec.sizeMax = Math.round(sizeRange.maximum * 1048576)
+        if (durationRange.minimum > 0) spec.durationMinMs = Math.round(durationRange.minimum * 1000)
+        if (durationRange.maximum >= 0) spec.durationMaxMs = Math.round(durationRange.maximum * 1000)
+        if (ratingRange.minimum > 0) spec.ratingMin = ratingRange.minimum
+        if (ratingRange.maximum < 5) spec.ratingMax = ratingRange.maximum
+        if (viewsMinField.text !== "") spec.viewsMin = parseInt(viewsMinField.text)
+        if (libraryView === "rated") spec.ratingMode = 3
+        if (libraryView === "unrated") spec.ratingMode = 1
+        if (libraryView === "unavailable")
+            spec.availability = ["missing", "unavailable"]
+        return spec
+    }
+    function runSearch() {
+        const spec = querySpec()
+        if (!spec) {
+            searchError = qsTr("Check the highlighted filter ranges.")
+            return
+        }
         catalogue.search(spec)
     }
 
     Connections {
+        target: catalogueModel
+        function onProgressChanged() {
+            if (catalogueModel.scanState === "complete") searchDebounce.restart()
+        }
+    }
+    Connections {
         target: catalogue
+        function onFilterBoundsReady(rootId, durationMs, sizeBytes) {
+            if (rootId !== window.selectedRoot) return
+            durationRange.scaleMaximum = Math.max(1, Math.ceil(durationMs / 1000))
+            sizeRange.scaleMaximum = Math.max(1, Math.ceil(sizeBytes / 1048576))
+        }
         function onSearchCompleted(generation, orderedIds, validationError) {
             searchError = validationError
             resultCount = orderedIds.length
             catalogueModel.setOrder(orderedIds, true)
+            if (orderedIds.indexOf(detailsVideoId) < 0) detailsVideoId = -1
         }
     }
 
@@ -707,10 +1061,14 @@ ApplicationWindow {
     }
     function showDetailsWithTags(videoId) {
         detailsTags = []
+        fileInfo = ({})
+        catalogue.requestFileInfo(videoId)
         catalogue.requestTags(videoId)
     }
 
     // Selection data for the details panel
+    property string detailsPosterSource: ""
+    property int detailsRating: 0
     property string detailsName: ""
     property string detailsPath: ""
     property string detailsSizeBytes: ""
@@ -727,8 +1085,12 @@ ApplicationWindow {
 
     function showDetails(videoId, name, path, sizeText, durationText, durationMs,
                          revision, resolution, codec, views, availability, probeStatus,
-                         probeError) {
+                         probeError, posterSource, rating) {
+        scrubSlider.engaged = false
+        detailsExpanded = true
         detailsVideoId = videoId
+        detailsPosterSource = posterSource || ""
+        detailsRating = rating || 0
         detailsName = name
         detailsPath = path
         detailsSizeBytes = sizeText
@@ -742,6 +1104,8 @@ ApplicationWindow {
         detailsProbeStatus = probeStatus
         detailsProbeError = probeError
         detailsTags = []
+        fileInfo = ({})
+        catalogue.requestFileInfo(videoId)
         catalogue.requestTags(videoId)
     }
 
@@ -751,10 +1115,15 @@ ApplicationWindow {
         function onRootRejected(reason) { errorLabel.text = reason }
         function onRootAdded(root) {
             rootModel.append({ rootId: root.id, rootName: root.path, rootStatus: root.status })
+            searchDebounce.restart()
         }
         function onRootRemoved(rootId) {
+            detailsVideoId = -1
+            hoverSession.disengage()
+            searchDebounce.restart()
             for (let i = 0; i < rootModel.count; ++i) {
                 if (rootModel.get(i).rootId === rootId) {
+                    if (selectedRoot === rootId) window.selectLibrary("all", -1, "")
                     rootModel.remove(i)
                     return
                 }
@@ -768,7 +1137,15 @@ ApplicationWindow {
         property string label
         property string value
         Layout.fillWidth: true
-        Label { text: parent.label; color: "#8b8b96"; Layout.preferredWidth: 90 }
-        Label { text: parent.value; color: "#e9e9f0"; elide: Text.ElideMiddle; Layout.fillWidth: true }
+        Label { text: parent.label; color: "#a4a69e"; Layout.preferredWidth: 90 }
+        Label {
+            text: parent.value
+            color: "#eeeee9"
+            elide: Text.ElideMiddle
+            Layout.fillWidth: true
+            ToolTip.visible: valueHover.hovered && truncated
+            ToolTip.text: text
+            HoverHandler { id: valueHover }
+        }
     }
 }

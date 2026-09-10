@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "Catalogue.h"
 
 #include <QUrl>
 
-namespace itub {
+namespace scrubtub {
 
 // QML file dialogs hand the UI file:// URLs (percent-encoded); the catalogue
 // stores and validates native paths. Regular path strings pass through
@@ -18,7 +18,7 @@ QString localPathFromUserInput(const QString& input)
     return input;
 }
 
-} // namespace itub
+} // namespace scrubtub
 
 #include "CatalogueM3.cpp"
 #include "CatalogueM4.cpp"
@@ -39,17 +39,19 @@ QString localPathFromUserInput(const QString& input)
 #include <QJsonDocument>
 #include <QLockFile>
 #include <QProcess>
+#include <QThread>
 #include <QThreadPool>
 #include <QTimer>
 #include <QUrl>
 
+#include <algorithm>
 #include <sqlite3.h>
 
 #ifdef Q_OS_UNIX
 #include <signal.h>
 #endif
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 
@@ -68,13 +70,53 @@ QString fileNameOf(const QString& path)
 // Cache profile identifiers: thumbnail quality changes create new versioned
 // keys and retire old entries (§6).
 const char* kPosterProfile = "poster-320-v1";
-const char* kStoryboardProfile = "sb-320-v1";
+const char* kStoryboardProfile = kSparsePreviewProfile;
+
+// The full row projection, shared by single-row reads and bulk refreshes.
+QString rowSelectSql()
+{
+    return QStringLiteral(
+        "SELECT id, root_id, rel_path, file_name, size_bytes, mtime_ms, revision, "
+        "duration_ms, display_width, display_height, codec, rating, views, added_ms, "
+        "availability, probe_status, probe_error, "
+        "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='poster'), "
+        "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.revision=v.revision "
+        "AND c.profile='%1') FROM videos v").arg(QLatin1String(kStoryboardProfile));
+}
+
+VideoRow rowFromColumns(Statement& st)
+{
+    VideoRow row;
+    row.id = st.int64(0);
+    row.rootId = st.int64(1);
+    row.relPath = st.text(2);
+    row.fileName = st.text(3);
+    row.sizeBytes = st.isNull(4) ? -1 : st.int64(4);
+    row.mtimeMs = st.isNull(5) ? -1 : st.int64(5);
+    row.revision = st.int64(6);
+    row.durationMs = st.isNull(7) ? -1 : st.int64(7);
+    row.displayWidth = st.isNull(8) ? 0 : static_cast<int>(st.int64(8));
+    row.displayHeight = st.isNull(9) ? 0 : static_cast<int>(st.int64(9));
+    row.codec = st.text(10);
+    row.rating = st.isNull(11) ? 0 : static_cast<int>(st.int64(11));
+    row.views = st.int64(12);
+    row.addedMs = st.int64(13);
+    row.availability = st.text(14);
+    row.probeStatus = st.text(15);
+    row.probeError = st.text(16);
+    row.posterReady = st.int64(17) != 0;
+    row.atlasReady = st.int64(18) != 0;
+    return row;
+}
 
 } // namespace
 
 Catalogue::Catalogue(QObject* parent)
     : QObject(parent)
 {
+    // Independent single-decoder jobs scale better than adding decoder
+    // threads. Keep capacity for the UI/player and avoid unbounded I/O.
+    m_jobConcurrency = std::clamp(QThread::idealThreadCount() - 2, 2, 4);
     qRegisterMetaType<VideoRow>();
     qRegisterMetaType<QList<VideoRow>>();
     qRegisterMetaType<RootInfo>();
@@ -116,6 +158,12 @@ bool Catalogue::initialize(const QString& profileDataDir, const QString& ffprobe
     if (!m_db->migrate(error))
         return false;
 
+    // Retire the large legacy atlases. The orphan sweep below only removes
+    // application-owned artifact names, preserving posters and source media.
+    Statement retire = m_db->prepare(
+        "DELETE FROM cache_entries WHERE kind='storyboard' AND profile<>?");
+    retire.bind(1, QLatin1String(kStoryboardProfile));
+    retire.run();
     // Interrupted jobs return to queued on startup (§5).
     m_db->exec("UPDATE jobs SET state='queued' WHERE state='running'");
     // Startup sweep: drop artifact files whose entries are gone (§6).
@@ -146,7 +194,18 @@ void Catalogue::loadExistingState()
             emit rootAdded(root);
         }
     }
+    // Repair missing poster caches first, including after Clear previews.
+    m_db->exec(
+        "INSERT OR IGNORE INTO jobs(video_id,revision,kind,state) "
+        "SELECT v.id,v.revision,'poster','queued' FROM videos v "
+        "WHERE probe_status='ok' AND availability='available' AND NOT EXISTS "
+        "(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.revision=v.revision AND c.kind='poster')");
+    if (m_db->lastChangeCount() > 0) m_sparsePassQueued = false;
     refreshRows();
+    emitProgress(m_scanState);
+    // Existing catalogues also get the sparse pass without requiring a rescan.
+    ensureDispatchTimer();
+    m_dispatchTimer->start(0);
 }
 
 void Catalogue::addRoot(const QString& pathIn, bool includeHidden)
@@ -216,9 +275,6 @@ void Catalogue::addRoot(const QString& pathIn, bool includeHidden)
 void Catalogue::removeRoot(qint64 rootId)
 {
     // Catalogue state only: media files are never touched here (§3).
-    if (m_scanActive.load() && m_scannedRootId == rootId)
-        m_cancelRequested.store(true);
-
     Statement find = m_db->prepare("SELECT id FROM roots WHERE id=?");
     find.bind(1, rootId);
     if (!find.step()) {
@@ -233,8 +289,16 @@ void Catalogue::removeRoot(qint64 rootId)
         emit operationFailed(m_db->lastError());
         return;
     }
+    // Cancel only this root's workers. Keep job objects alive until their
+    // queued completion arrives; cancellation also protects against reused IDs.
+    killActiveJobs(rootId);
+    m_searchRecords.clear();
+    if (m_scannedRootId == rootId)
+        m_scannedRootId = 0;
     emit rootRemoved(rootId);
-    emit rowsChanged(QList<VideoRow>{}, true);
+    refreshRows(); // Reload catalogue rows, never rediscover remaining folders.
+    emitProgress(m_scanState);
+    dispatchJobs();
 }
 
 void Catalogue::rescanRoot(qint64 rootId, bool force)
@@ -273,6 +337,7 @@ void Catalogue::startScan(qint64 rootId, bool force)
     m_pauseRequested.store(false);
     m_scannedRootId = rootId;
     m_scanForce = force;
+    m_sparsePassQueued = false;
     m_discovered = 0;
     m_probed = 0;
     m_errors = 0;
@@ -544,6 +609,23 @@ void Catalogue::ensureDispatchTimer()
     }
 }
 
+void Catalogue::queueSparsePreviews()
+{
+    // One pass per scan/session: cache eviction must not create a regeneration
+    // loop. Only successfully probed videos with ready posters are eligible.
+    Statement queue = m_db->prepare(
+        "INSERT OR IGNORE INTO jobs(video_id,revision,kind,state) "
+        "SELECT v.id,v.revision,'storyboard','queued' FROM videos v "
+        "WHERE v.probe_status='ok' AND v.availability='available' AND v.duration_ms>0 "
+        "AND EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id "
+        "AND c.revision=v.revision AND c.kind='poster') "
+        "AND NOT EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id "
+        "AND c.revision=v.revision AND c.profile=?) ORDER BY v.id");
+    queue.bind(1, QLatin1String(kStoryboardProfile));
+    queue.run();
+    m_sparsePassQueued = true;
+}
+
 void Catalogue::dispatchJobs()
 {
     if (m_cancelRequested.load()) {
@@ -560,16 +642,31 @@ void Catalogue::dispatchJobs()
         }
         return;
     }
+    Statement job = m_db->prepare(
+        "SELECT j.id, j.video_id, j.revision, j.kind, v.cmp_key, r.path, r.id FROM jobs j "
+        "JOIN videos v ON v.id = j.video_id JOIN roots r ON r.id = v.root_id "
+        "WHERE j.state='queued' AND j.kind=? ORDER BY j.id LIMIT 1");
+    const qint64 primaryPending = m_db->scalarInt(
+        "SELECT COUNT(*) FROM jobs WHERE kind IN ('probe','poster') "
+        "AND state IN ('queued','running')").value_or(0);
+    if (primaryPending == 0 && !m_sparsePassQueued)
+        queueSparsePreviews();
     while (m_activeJobs.size() < m_jobConcurrency) {
         // Priority: posters (visible cards) before remaining probes, and
-        // background storyboards last (§5).
-        Statement job = m_db->prepare(
-            "SELECT j.id, j.video_id, j.revision, j.kind, v.cmp_key, r.path FROM jobs j "
-            "JOIN videos v ON v.id = j.video_id JOIN roots r ON r.id = v.root_id "
-            "WHERE j.state='queued' "
-            "ORDER BY CASE j.kind WHEN 'poster' THEN 0 WHEN 'probe' THEN 1 ELSE 2 END, "
-            "j.id LIMIT 1");
-        if (!job.step())
+        // background storyboards last (§5). Picking per kind keeps every
+        // probe on idx_jobs_state; the CASE-ordered form made SQLite sort the
+        // whole queued backlog once per dispatched job.
+        static const char* const kKindPriority[] = {"poster", "probe", "storyboard"};
+        bool picked = false;
+        for (const char* priority : kKindPriority) {
+            job.reset();
+            job.bind(1, QLatin1String(priority));
+            if (job.step()) {
+                picked = true;
+                break;
+            }
+        }
+        if (!picked)
             break;
         const qint64 jobId = job.int64(0);
         const qint64 videoId = job.int64(1);
@@ -577,6 +674,21 @@ void Catalogue::dispatchJobs()
         const QString kind = job.text(3);
         const QString rel = job.text(4);
         const QString rootPath = job.text(5);
+        if (kind == QLatin1String("storyboard")) {
+            // Never start the second pass while metadata/posters are pending.
+            const auto activePreviews = std::count_if(m_activeJobs.cbegin(), m_activeJobs.cend(),
+                [](const ActiveJob* item) { return item->kind == QLatin1String("storyboard"); });
+            if (primaryPending > 0 || activePreviews >= 2)
+                break;
+            const qint64 previewBytes = m_db->scalarInt(
+                "SELECT COALESCE(SUM(bytes),0) FROM cache_entries WHERE kind='storyboard'").value_or(0);
+            if (previewBytes + (activePreviews + 1) * kSparsePreviewMaxBytes > kSparsePreviewCacheBytes) {
+                // Reserve the worst-case output size for running jobs. A full
+                // preview cache stops the pass rather than evicting/rebuilding.
+                m_db->exec("DELETE FROM jobs WHERE kind='storyboard' AND state='queued'");
+                break;
+            }
+        }
 
         // A queued job for an older revision is obsolete; drop it (§5).
         Statement rev = m_db->prepare(
@@ -597,12 +709,14 @@ void Catalogue::dispatchJobs()
 
         auto* active = new ActiveJob;
         active->jobId = jobId;
+        active->rootId = job.int64(6);
         active->videoId = videoId;
         active->revision = revision;
         active->kind = kind;
         active->durationMs = durationMs;
         active->streamIndex = streamIndex;
         m_activeJobs.append(active);
+        m_scanActive.store(true);
 
         const QString absPath = rootPath + QLatin1Char('/') + rel;
         if (!m_pool)
@@ -617,9 +731,11 @@ void Catalogue::dispatchJobs()
         queued.step();
         if (queued.int64(0) == 0) {
             m_scanActive.store(false);
-            emitProgress(QStringLiteral("complete"));
         }
     }
+    emitProgressThrottled(m_scanActive.load() || !m_activeJobs.isEmpty()
+                     ? (primaryPending > 0 ? QStringLiteral("probing") : QStringLiteral("previews"))
+                     : QStringLiteral("complete"));
 }
 
 void Catalogue::runJob(ActiveJob* job, const QString& absPath)
@@ -672,6 +788,12 @@ void Catalogue::finishJob(ActiveJob* job, std::optional<ProbeResult> probe,
     if (!m_activeJobs.removeOne(job))
         return;
     job->pid.store(0);
+
+    if (job->cancelled.load() && !m_cancelRequested.load()) {
+        delete job;
+        dispatchJobs();
+        return;
+    }
 
     if (m_cancelRequested.load()) {
         // Cancellation is not a failure: the job returns to queued (§5).
@@ -793,8 +915,7 @@ bool Catalogue::applyProbeResult(qint64 videoId, qint64 revision, const ProbeRes
 
 void Catalogue::enqueuePreviewJobs(qint64 videoId, bool includeStoryboard)
 {
-    // Posters are generated before storyboards (§6); storyboards are queued
-    // on demand (hover or explicit precompute).
+    // Posters are foreground work; sparse previews are the second pass.
     Statement info = m_db->prepare(
         "SELECT revision, duration_ms, stream_index, probe_status FROM videos WHERE id=?");
     info.bind(1, videoId);
@@ -808,26 +929,38 @@ void Catalogue::enqueuePreviewJobs(qint64 videoId, bool includeStoryboard)
 
     Statement posterJob = m_db->prepare(
         "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
-        "VALUES(?,?,'poster','queued')");
+        "SELECT ?,?,'poster','queued' WHERE NOT EXISTS "
+        "(SELECT 1 FROM cache_entries WHERE video_id=? AND revision=? AND kind='poster')");
     posterJob.bind(1, videoId);
     posterJob.bind(2, revision);
+    posterJob.bind(3, videoId);
+    posterJob.bind(4, revision);
     posterJob.run();
+    bool queued = m_db->lastChangeCount() > 0;
+    if (queued) m_sparsePassQueued = false;
     if (includeStoryboard && durationMs > 0) {
         Statement sbJob = m_db->prepare(
             "INSERT OR IGNORE INTO jobs(video_id, revision, kind, state) "
-            "VALUES(?,?,'storyboard','queued')");
+            "SELECT ?,?,'storyboard','queued' WHERE NOT EXISTS "
+            "(SELECT 1 FROM cache_entries WHERE video_id=? AND revision=? AND profile=?)");
         sbJob.bind(1, videoId);
         sbJob.bind(2, revision);
+        sbJob.bind(3, videoId);
+        sbJob.bind(4, revision);
+        sbJob.bind(5, QLatin1String(kStoryboardProfile));
         sbJob.run();
+        queued = queued || m_db->lastChangeCount() > 0;
     }
-    ensureDispatchTimer();
-    m_dispatchTimer->start(0);
+    // Cache hits and already queued work must not restart processing status.
+    if (queued) {
+        ensureDispatchTimer();
+        m_dispatchTimer->start(0);
+    }
 }
 
 void Catalogue::requestStoryboard(qint64 videoId)
 {
-    // Lazy generation: a missing fallback storyboard is produced through
-    // low-priority background work on first need (§6).
+    // Explicit requests still obey the primary-work barrier and cache budget.
     enqueuePreviewJobs(videoId, true);
 }
 
@@ -862,7 +995,6 @@ void Catalogue::applyExtractResult(ActiveJob* job, const ExtractResult& result)
         });
         emit operationFailed(QStringLiteral("Preview generation failed: %1")
                                  .arg(result.error.left(200)));
-        dispatchJobs();
         return;
     }
 
@@ -898,7 +1030,6 @@ void Catalogue::applyExtractResult(ActiveJob* job, const ExtractResult& result)
     emit cacheEntryChanged(job->videoId, profile);
     emitRows(QList<VideoRow>{readRow(job->videoId)});
     enforceCacheLimit();
-    dispatchJobs();
 }
 
 void Catalogue::enforceCacheLimit()
@@ -906,24 +1037,65 @@ void Catalogue::enforceCacheLimit()
     // Evict least-recently-used owned artifacts only; ratings and tags are
     // never touched (§6). LRU access times are per entry, not per mouse move.
     const qint64 limit = settingInt("disk_cache_bytes", m_diskCacheLimit);
-    for (;;) {
-        Statement sum = m_db->prepare("SELECT COALESCE(SUM(bytes),0) FROM cache_entries");
-        sum.step();
-        const qint64 total = sum.int64(0);
-        if (total <= limit)
-            return;
-        Statement oldest = m_db->prepare(
-            "SELECT video_id, profile, rel_path FROM cache_entries "
-            "ORDER BY last_access_ms ASC LIMIT 1");
+    // One total, decremented as entries are evicted: the SUM query used to be
+    // re-run for every eviction (§6).
+    Statement sum = m_db->prepare("SELECT COALESCE(SUM(bytes),0) FROM cache_entries");
+    sum.step();
+    qint64 total = sum.int64(0);
+    Statement oldest = m_db->prepare(
+        "SELECT video_id, profile, rel_path, bytes FROM cache_entries "
+        "ORDER BY last_access_ms ASC LIMIT 1");
+    Statement del = m_db->prepare(
+        "DELETE FROM cache_entries WHERE video_id=? AND profile=?");
+    while (total > limit) {
+        oldest.reset();
         if (!oldest.step())
             return;
-        QFile::remove(m_cacheDir + QLatin1Char('/') + oldest.text(2));
-        Statement del = m_db->prepare(
-            "DELETE FROM cache_entries WHERE video_id=? AND profile=?");
-        del.bind(1, oldest.int64(0));
-        del.bind(2, oldest.text(1));
+        const qint64 videoId = oldest.int64(0);
+        const QString profile = oldest.text(1);
+        const QString relPath = oldest.text(2);
+        const qint64 bytes = oldest.int64(3);
+        oldest.reset(); // release the read cursor before the delete
+        QFile::remove(m_cacheDir + QLatin1Char('/') + relPath);
+        del.reset();
+        del.bind(1, videoId);
+        del.bind(2, profile);
         del.run();
+        total -= bytes;
     }
+}
+
+void Catalogue::requestFileInfo(qint64 videoId)
+{
+    Statement st = m_db->prepare(
+        "SELECT r.path, v.rel_path, v.mtime_ms, v.added_ms, v.last_opened_ms, "
+        "v.coded_width, v.coded_height, v.rotation_deg "
+        "FROM videos v JOIN roots r ON r.id=v.root_id WHERE v.id=?");
+    st.bind(1, videoId);
+    QVariantMap info;
+    if (st.step()) {
+        info.insert(QStringLiteral("path"), QDir(st.text(0)).filePath(st.text(1)));
+        const QStringList keys{QStringLiteral("modified"), QStringLiteral("added"),
+            QStringLiteral("lastOpened"), QStringLiteral("codedWidth"),
+            QStringLiteral("codedHeight"), QStringLiteral("rotation")};
+        for (int i = 0; i < keys.size(); ++i)
+            info.insert(keys[i], st.isNull(i + 2) ? QVariant() : QVariant(st.int64(i + 2)));
+    }
+    emit fileInfoReady(videoId, info);
+}
+
+void Catalogue::openFileLocation(qint64 videoId)
+{
+    Statement st = m_db->prepare(
+        "SELECT r.path, v.rel_path FROM videos v JOIN roots r ON r.id=v.root_id WHERE v.id=?");
+    st.bind(1, videoId);
+    if (!st.step()) {
+        emit operationFailed(QStringLiteral("Unknown video"));
+        return;
+    }
+    const QString directory = QFileInfo(QDir(st.text(0)).filePath(st.text(1))).absolutePath();
+    if (!QDir(directory).exists() || !QDesktopServices::openUrl(QUrl::fromLocalFile(directory)))
+        emit operationFailed(QStringLiteral("Could not open file location: %1").arg(directory));
 }
 
 void Catalogue::openInDefaultPlayer(qint64 videoId)
@@ -974,8 +1146,9 @@ void Catalogue::hoverEngage(qint64 videoId)
 void Catalogue::requestSampleTimes(qint64 videoId)
 {
     Statement info = m_db->prepare(
-        "SELECT sample_times FROM cache_entries WHERE video_id=? AND kind='storyboard'");
+        "SELECT sample_times FROM cache_entries WHERE video_id=? AND profile=?");
     info.bind(1, videoId);
+    info.bind(2, QLatin1String(kStoryboardProfile));
     if (!info.step()) {
         emit sampleTimesReady(videoId, {});
         return;
@@ -988,9 +1161,10 @@ void Catalogue::requestSampleTimes(qint64 videoId)
     emit sampleTimesReady(videoId, times);
 }
 
-void Catalogue::killActiveJobs()
+void Catalogue::killActiveJobs(qint64 rootId)
 {
     for (ActiveJob* job : m_activeJobs) {
+        if (rootId != 0 && job->rootId != rootId) continue;
         job->cancelled.store(true);
         const qint64 pid = job->pid.load();
         if (pid > 0) {
@@ -1010,6 +1184,7 @@ void Catalogue::killActiveJobs()
     // before the timer fires.
     QList<qint64> killedPids;
     for (ActiveJob* job : m_activeJobs) {
+        if (rootId != 0 && job->rootId != rootId) continue;
         if (job->pid.load() > 0)
             killedPids.append(job->pid.load());
     }
@@ -1080,61 +1255,66 @@ void Catalogue::incrementViews(qint64 videoId)
 
 void Catalogue::refreshRows()
 {
+    // One projection query, not one readRow() per video (§1 startup path).
     QList<VideoRow> rows;
-    Statement st = m_db->prepare("SELECT id FROM videos ORDER BY root_id, file_name, id");
+    const QByteArray sql =
+        (rowSelectSql() + QStringLiteral(" ORDER BY root_id, file_name, id")).toUtf8();
+    Statement st = m_db->prepare(sql.constData());
     while (st.step())
-        rows.append(readRow(st.int64(0)));
+        rows.append(rowFromColumns(st));
     emit rowsChanged(rows, true);
 }
 
 VideoRow Catalogue::readRow(qint64 videoId)
 {
-    VideoRow row;
-    Statement st = m_db->prepare(
-        "SELECT id, root_id, rel_path, file_name, size_bytes, mtime_ms, revision, "
-        "duration_ms, display_width, display_height, codec, rating, views, added_ms, "
-        "availability, probe_status, probe_error, "
-        "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='poster'), "
-        "EXISTS(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND c.kind='storyboard') "
-        "FROM videos v WHERE v.id=?");
+    const QByteArray sql = (rowSelectSql() + QStringLiteral(" WHERE v.id=?")).toUtf8();
+    Statement st = m_db->prepare(sql.constData());
     st.bind(1, videoId);
     if (!st.step())
-        return row;
-    row.id = st.int64(0);
-    row.rootId = st.int64(1);
-    row.relPath = st.text(2);
-    row.fileName = st.text(3);
-    row.sizeBytes = st.isNull(4) ? -1 : st.int64(4);
-    row.mtimeMs = st.isNull(5) ? -1 : st.int64(5);
-    row.revision = st.int64(6);
-    row.durationMs = st.isNull(7) ? -1 : st.int64(7);
-    row.displayWidth = st.isNull(8) ? 0 : static_cast<int>(st.int64(8));
-    row.displayHeight = st.isNull(9) ? 0 : static_cast<int>(st.int64(9));
-    row.codec = st.text(10);
-    row.rating = st.isNull(11) ? 0 : static_cast<int>(st.int64(11));
-    row.views = st.int64(12);
-    row.addedMs = st.int64(13);
-    row.availability = st.text(14);
-    row.probeStatus = st.text(15);
-    row.probeError = st.text(16);
-    row.posterReady = st.int64(17) != 0;
-    row.atlasReady = st.int64(18) != 0;
-    return row;
+        return {};
+    return rowFromColumns(st);
 }
 
 void Catalogue::emitProgress(const QString& state)
 {
     m_scanState = state;
+    m_lastProgressState = state;
+    m_progressClock.restart();
     ScanProgress progress;
     progress.rootId = m_scannedRootId;
     progress.state = state;
     progress.discovered = m_discovered;
     progress.probed = m_probed;
     progress.errors = m_errors;
+    // Count videos, not jobs: probing hands off to posters without increasing
+    // the remaining total. Optional storyboards do not hold up readiness.
+    progress.remaining = m_db->scalarInt(
+        "SELECT COUNT(DISTINCT video_id) FROM jobs WHERE kind IN ('probe','poster') "
+        "AND state IN ('queued','running')").value_or(0);
+    progress.processed = m_db->scalarInt(
+        "SELECT COUNT(*) FROM videos v WHERE probe_status='ok' AND EXISTS "
+        "(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND "
+        "c.revision=v.revision AND c.kind='poster')").value_or(0);
+    progress.previewsRemaining = m_db->scalarInt(
+        "SELECT COUNT(*) FROM jobs WHERE kind='storyboard' AND state IN ('queued','running')").value_or(0);
+    progress.failed = m_db->scalarInt(
+        "SELECT COUNT(DISTINCT video_id) FROM jobs WHERE kind IN ('probe','poster') "
+        "AND state='error'").value_or(0);
     Statement st = m_db->prepare("SELECT path FROM roots WHERE id=?");
     st.bind(1, m_scannedRootId);
     progress.rootPath = st.step() ? st.text(0) : QString();
     emit scanProgress(progress);
+}
+
+void Catalogue::emitProgressThrottled(const QString& state)
+{
+    // §5 counts are for a status line; recomputing them (a full video scan per
+    // call) once per dispatched job is what made long scans CPU-bound.
+    constexpr int kProgressIntervalMs = 250;
+    if (state == m_lastProgressState && m_progressClock.isValid()
+        && m_progressClock.elapsed() < kProgressIntervalMs)
+        return;
+    emitProgress(state);
 }
 
 void Catalogue::emitRows(const QList<VideoRow>& rows)
@@ -1148,4 +1328,4 @@ QString Catalogue::artifactPath(qint64 videoId, qint64 revision,
     return m_cacheDir + QStringLiteral("/%1-%2-%3.jpg").arg(videoId).arg(revision).arg(profile);
 }
 
-} // namespace itub
+} // namespace scrubtub

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "SourceScanner.h"
 
 #include <QDir>
@@ -10,7 +10,7 @@
 #include <filesystem>
 #include <system_error>
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 
@@ -185,4 +185,4 @@ DiscoveryResult SourceScanner::enumerateRoot(const DiscoveryOptions& options,
     return result;
 }
 
-} // namespace itub
+} // namespace scrubtub

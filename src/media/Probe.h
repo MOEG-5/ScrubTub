@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // ffprobe runner (TECH_SPEC.md sections 3, 5): argument-array invocation,
 // no shell, -nostdin, bounded output, video-stream selection with the
 // attached-picture exclusion, video-stream duration first with a documented
@@ -11,7 +11,7 @@
 #include <atomic>
 #include <functional>
 
-namespace itub {
+namespace scrubtub {
 
 // Registered with the process's PID at spawn (0 when done) so the catalogue
 // can kill process trees promptly on cancellation (TECH_SPEC.md §11).
@@ -51,4 +51,4 @@ public:
     static ProbeResult parse(const QByteArray& json);
 };
 
-} // namespace itub
+} // namespace scrubtub

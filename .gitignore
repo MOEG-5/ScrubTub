@@ -24,7 +24,8 @@ bench-results/
 *.log
 .coverage
 
-# Private fixture media: never enter version control (PLAN.md / TECH_SPEC.md)
+# Local test media
+/vids/
 testvideo1.mp4
 fixtures/
 *.mp4

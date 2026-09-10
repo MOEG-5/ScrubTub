@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "ProfilePaths.h"
 
 #include <QDir>
 #include <QStandardPaths>
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 QString joinProfile(const QString& base, const QString& profileId)
@@ -20,6 +20,11 @@ QString ProfilePaths::profileDataDir(const QString& profileId)
 {
     const QString base =
         QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    // Keep existing libraries and annotations accessible after the rename.
+    const QString legacy = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/itub-project/itub");
+    if (!QDir(base).exists() && QDir(legacy).exists())
+        return joinProfile(legacy, profileId);
     return joinProfile(base, profileId);
 }
 
@@ -27,7 +32,7 @@ QString ProfilePaths::profileCacheDir(const QString& profileId)
 {
     const QString base =
         QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation);
-    return joinProfile(base + QStringLiteral("/itub"), profileId);
+    return joinProfile(base + QStringLiteral("/scrubtub"), profileId);
 }
 
 bool ProfilePaths::ensureDirs(const QString& profileId, QString* error)
@@ -46,4 +51,4 @@ bool ProfilePaths::ensureDirs(const QString& profileId, QString* error)
     return true;
 }
 
-} // namespace itub
+} // namespace scrubtub

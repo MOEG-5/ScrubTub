@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Probe contract checks (TECH_SPEC.md section 12 "Extraction"):
 // video-stream duration over subtitle duration, stream selection excluding
 // attached pictures, rotation/display dimensions, corrupt input, timeouts.
@@ -19,13 +19,13 @@
 
 #include "media/Probe.h"
 
-using namespace itub;
+using namespace scrubtub;
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
 static QString fixturePath()
 {
-    const QByteArray env = qgetenv("ITUB_TEST_SOURCE_VIDEO");
-    return env.isEmpty() ? QStringLiteral(ITUB_DEFAULT_SOURCE_FIXTURE)
+    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
+    return env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
                          : QString::fromLocal8Bit(env);
 }
 #endif
@@ -168,7 +168,7 @@ void TestProbe::malformedJsonIsBadMedia()
 
 void TestProbe::runOnOriginalFixture()
 {
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
     const QString source = fixturePath();
     if (source.isEmpty() || !QFileInfo::exists(source))
         QSKIP("Source fixture unavailable");

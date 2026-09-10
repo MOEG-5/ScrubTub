@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Async image provider for posters and storyboard atlases (TECH_SPEC.md
 // sections 2 and 6): asynchronous disk reads with bounded decode sizes,
 // immutable cache keys (videoId-revision-profile). Served through
@@ -15,7 +15,7 @@
 
 #include <atomic>
 
-namespace itub {
+namespace scrubtub {
 
 class Catalogue;
 
@@ -58,4 +58,4 @@ private:
     std::atomic_bool m_cancelled{false};
 };
 
-} // namespace itub
+} // namespace scrubtub

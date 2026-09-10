@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Grid card: poster, metadata, rating stars, and the hover timeline
 // (TECH_SPEC.md sections 1, 6, 10). Hover behavior: 120 ms dwell engages the
 // shared paused-player session; pointer position maps to a requested time;
@@ -8,7 +8,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import itub.media
+import scrubtub.media
 
 Item {
     id: card
@@ -33,28 +33,60 @@ Item {
     required property string atlasSource
     required property int index
 
-    readonly property bool hoverActive: hoverArea.containsMouse
+    readonly property bool hoverActive: hoverArea.containsMouse && !grid.moving
     property var sampleTimes: []
     property bool atlasReady: false
     property bool liveFrameVisible: false
+    property bool sessionEngaged: false
     property int hoverTileIndex: 0
 
     // Poster/atlas URLs come directly from the model (immutable per revision).
+
+    function inspect() {
+        if (videoId <= 0) return
+        window.showDetails(videoId, name, path, sizeBytes, durationText,
+                                   durationMs, revision,
+                                   displayWidth > 0 ? displayWidth + "×" + displayHeight : "?",
+                                   codec || "?", views, availability, probeStatus,
+                                   probeError, posterSource, rating)
+    }
 
     function formatTime(ms) {
         const s = Math.floor(ms / 1000)
         return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
     }
 
+    function pointerTarget() {
+        if (contentArea.width <= 0 || durationMs <= 0)
+            return 0
+        const x = hoverArea.mapToItem(contentArea, hoverArea.mouseX, hoverArea.mouseY).x
+        return Math.round(Math.min(1, Math.max(0, x / contentArea.width)) * durationMs)
+    }
+
+    function updateTarget() {
+        const target = pointerTarget()
+        let nearest = 0
+        for (let i = 1; i < sampleTimes.length; ++i) {
+            if (Math.abs(sampleTimes[i] - target) < Math.abs(sampleTimes[nearest] - target))
+                nearest = i
+        }
+        hoverTileIndex = nearest
+        if (sessionEngaged) {
+            hoverSession.scrub(target)
+        }
+    }
+
     onHoverActiveChanged: {
         if (hoverActive) {
             dwellTimer.restart()
-            catalogue.requestSampleTimes(videoId)
-            // Lazy storyboard generation for cached scrubbing (§6).
-            catalogue.requestStoryboard(videoId)
+            if (window.cachedTimelineEnabled) {
+                catalogue.requestSampleTimes(videoId)
+            }
         } else {
             dwellTimer.stop()
-            hoverSession.disengage()
+            if (sessionEngaged)
+                hoverSession.disengage()
+            sessionEngaged = false
             liveFrameVisible = false
             sampleTimes = []
             atlasReady = false
@@ -67,7 +99,6 @@ Item {
         onTriggered: {
             if (card.hoverActive) {
                 catalogue.hoverEngage(card.videoId)
-                liveFrameVisible = hoverSession.enabled
             }
         }
     }
@@ -75,29 +106,31 @@ Item {
     Rectangle {
         id: cardBody
         anchors.fill: parent
-        anchors.margins: 6
-        radius: 6
-        color: "#1e1e26"
-        border.color: grid.currentIndex === index ? "#7fb2ff" : (availability === "missing" ? "#5a3a3a" : "transparent")
-        border.width: grid.currentIndex === index ? 2 : 1
+        anchors.topMargin: 8
+        anchors.bottomMargin: 8
+        radius: 0
+        color: "transparent"
+        border.color: "transparent"
+        border.width: 0
 
         // Poster / live-frame content area (16:9-ish)
         Rectangle {
             id: contentArea
+            objectName: "thumbnailArea"
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.margins: 8
+            anchors.margins: 0
             height: parent.height - 62
-            radius: 4
-            color: "#141418"
+            radius: 6
+            color: "#10120f"
             clip: true
 
             // Cached poster fallback; never a misleading timeline by itself.
             Image {
                 id: posterImage
                 anchors.fill: parent
-                sourceSize.width: contentArea.width
+                sourceSize.width: 320 // posters are generated at this size; resizing needs no reload
                 asynchronous: true
                 fillMode: Image.PreserveAspectFit
                 visible: !card.liveFrameVisible
@@ -128,73 +161,97 @@ Item {
                 }
             }
 
-            // Status label for the precise session.
-            Label {
+            Rectangle {
                 anchors.top: parent.top
                 anchors.right: parent.right
-                anchors.margins: 4
-                visible: card.hoverActive && hoverSession.status !== "idle"
-                text: hoverSession.status
-                color: hoverSession.status === "imprecise" ? "#ffb36b"
-                     : hoverSession.status === "unavailable" ? "#ff8a80" : "#7fd18b"
-                font.pixelSize: 10
+                anchors.margins: 8
+                width: unavailableLabel.implicitWidth + 12
+                height: 24
+                radius: 4
+                color: "#dc191b19"
+                visible: card.hoverActive && hoverSession.enabled && hoverSession.status === "unavailable"
+                Label { id: unavailableLabel; anchors.centerIn: parent; text: qsTr("Cached preview"); color: "#d3d4cc"; font.pixelSize: 11 }
             }
 
             // Cached timeline strip: nearest storyboard tile; instant feedback
             // with zero source reads in cached-only mode (§6).
             Item {
                 id: timelineStrip
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                height: card.hoverActive && card.atlasReady
-                        && card.sampleTimes.length > 0 && durationMs > 0 ? 40 : 0
+                anchors.fill: parent
+                visible: card.hoverActive && durationMs > 0
                 clip: true
 
                 Image {
                     id: atlasImage
-                    source: card.hoverActive ? card.atlasSource : ""
+                    source: window.cachedTimelineEnabled && card.hoverActive ? card.atlasSource : ""
                     sourceSize.width: 0
                     asynchronous: true
                     visible: false
                     onStatusChanged: if (status === Image.Ready) card.atlasReady = true
                 }
 
-                Image {
-                    anchors.fill: parent
-                    source: atlasImage.source
-                    fillMode: Image.PreserveAspectFit
-                    // Slice the atlas to the nearest cached sample (§6).
-                    property int tileW: 320
-                    property int tileH: displayWidth > 0
-                        ? Math.round(320 * displayHeight / displayWidth) : 180
-                    property int columns: 6
-                    sourceClipRect: Qt.rect(
-                        (card.hoverTileIndex % columns) * tileW,
-                        Math.floor(card.hoverTileIndex / columns) * tileH,
-                        tileW, tileH)
+                // Clip the displayed atlas: sourceClipRect does not crop our
+                // asynchronous image provider's returned texture.
+                Item {
+                    id: cachedFrame
+                    anchors.centerIn: parent
+                    property real tileW: atlasImage.implicitWidth / 5
+                    property real tileH: atlasImage.implicitHeight
+                        / Math.max(1, Math.ceil(card.sampleTimes.length / 5))
+                    property real fit: Math.min(parent.width / Math.max(1, tileW),
+                                                parent.height / Math.max(1, tileH))
+                    width: tileW * fit
+                    height: tileH * fit
+                    clip: true
                     visible: card.hoverActive && card.atlasReady
-                             && !card.liveFrameVisible
+                             && card.sampleTimes.length > 0 && !card.liveFrameVisible
+                    Image {
+                        source: atlasImage.source
+                        asynchronous: true
+                        width: atlasImage.implicitWidth * cachedFrame.fit
+                        height: atlasImage.implicitHeight * cachedFrame.fit
+                        x: -(card.hoverTileIndex % 5) * cachedFrame.width
+                        y: -Math.floor(card.hoverTileIndex / 5) * cachedFrame.height
+                    }
                 }
 
-                Label {
-                    anchors.bottom: parent.bottom
-                    anchors.right: parent.right
-                    anchors.margins: 2
-                    text: {
-                        if (card.liveFrameVisible && hoverSession.lastFramePtsMs >= 0)
-                            return formatTime(hoverSession.lastFramePtsMs)
-                        if (card.sampleTimes.length > 0)
-                            return formatTime(card.sampleTimes[card.hoverTileIndex]) + " ≈"
-                        return "≈"
-                    }
-                    color: "#ffffff"
-                    style: Text.Outline
-                    styleColor: "#000000"
-                    font.pixelSize: 11
-                }
 
             }
+        }
+        Rectangle {
+            anchors.fill: contentArea
+            color: "transparent"
+            radius: 6
+            border.width: 1
+            border.color: grid.currentIndex === index ? "#ddbe8b" : card.hoverActive ? "#787c70" : "#31342e"
+        }
+        Rectangle {
+            anchors.right: contentArea.right
+            anchors.bottom: contentArea.bottom
+            anchors.margins: 8
+            width: timeLabel.implicitWidth + 12
+            height: 24
+            radius: 4
+            color: "#e010120f"
+            Label {
+                id: timeLabel
+                anchors.centerIn: parent
+                text: card.hoverActive && card.liveFrameVisible && hoverSession.lastFramePtsMs >= 0
+                    ? formatTime(hoverSession.lastFramePtsMs)
+                    : card.hoverActive && card.sampleTimes.length > 0
+                      ? formatTime(card.sampleTimes[card.hoverTileIndex]) + " ≈" : durationText
+                color: "#eeeee9"
+                font.pixelSize: 11
+            }
+        }
+        Rectangle {
+            anchors.left: contentArea.left
+            anchors.bottom: contentArea.bottom
+            width: card.hoverActive && card.durationMs > 0
+                ? contentArea.width * Math.min(1, card.pointerTarget() / card.durationMs) : 0
+            height: 3
+            color: "#ddbe8b"
+            visible: card.hoverActive
         }
 
         // Filename + summary
@@ -202,26 +259,33 @@ Item {
             anchors.top: contentArea.bottom
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.margins: 8
+            anchors.topMargin: 10
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
             text: name
             elide: Text.ElideRight
-            color: "#f2f2f6"
-            font.pixelSize: 12
+            color: "#eeeee9"
+            font.pixelSize: 13
+            font.weight: Font.Medium
         }
         Label {
             anchors.bottom: parent.bottom
             anchors.left: parent.left
-            anchors.margins: 8
-            text: durationText + " · " + sizeText
-            color: "#9a9aa6"
+            anchors.bottomMargin: 8
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
+            text: (displayHeight > 0 ? displayHeight + "p  ·  " : "") + sizeText
+            color: "#a4a69e"
             font.pixelSize: 11
         }
         Label {
             anchors.bottom: parent.bottom
             anchors.right: parent.right
-            anchors.margins: 8
-            text: views > 0 ? qsTr("%1 views").arg(views) : ""
-            color: "#9a9aa6"
+            anchors.bottomMargin: 8
+            anchors.leftMargin: 8
+            anchors.rightMargin: 8
+            text: rating > 0 ? qsTr("%1 / 5").arg(rating) : ""
+            color: "#a4a69e"
             font.pixelSize: 11
         }
 
@@ -232,94 +296,67 @@ Item {
         id: hoverArea
         anchors.fill: parent
         hoverEnabled: true
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.PointingHandCursor
-        onPositionChanged: (mouse) => {
-            const w = contentArea.width
-            if (w <= 0 || durationMs <= 0)
-                return
-            const u = Math.min(1, Math.max(0, (mouse.x - contentArea.x) / w))
-            // Nearest cached sample tile index.
-            const n = card.sampleTimes.length
-            if (n > 0)
-                card.hoverTileIndex = Math.min(n - 1, Math.floor(u * n))
-            if (liveFrameVisible)
-                hoverSession.scrub(Math.round(u * durationMs))
-        }
+        onPositionChanged: if (card.hoverActive) card.updateTarget()
         onClicked: (mouse) => {
-            if (mouse.button === Qt.LeftButton) {
+            if (mouse.button === Qt.LeftButton || mouse.button === Qt.RightButton) {
                 grid.currentIndex = index
-                window.showDetails(videoId, name, path, sizeBytes, durationText,
-                                   durationMs, revision,
-                                   displayWidth > 0 ? displayWidth + "×" + displayHeight : "?",
-                                   codec || "?", views, availability, probeStatus,
-                                   probeError)
+                grid.forceActiveFocus()
+                card.inspect()
+                if (mouse.button === Qt.RightButton)
+                    thumbnailMenu.popup()
             }
         }
-        onDoubleClicked: catalogue.openInDefaultPlayer(videoId)
-        onEntered: {
-            // Instant cached feedback before the dwell elapses (§6).
-            if (sampleTimes.length === 0)
-                catalogue.requestSampleTimes(videoId)
+        onDoubleClicked: (mouse) => {
+            if (mouse.button === Qt.LeftButton) catalogue.openInDefaultPlayer(videoId)
         }
-        onExited: {
-            hoverSession.disengage()
-            liveFrameVisible = false
-        }
+
     }
 
-    // Accessible star controls; a click must not trigger playback (§10).
-    // Declared after the card's MouseArea so the buttons receive the clicks;
-    // anchored inside the card with a chip background for visibility.
-    Rectangle {
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 8
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: starRow.implicitWidth + 8
-        height: 22
-        radius: 11
-        color: "#cc141418"
-        visible: card.hoverActive
-        Row {
-            id: starRow
-            anchors.centerIn: parent
-            spacing: 0
-        Repeater {
-            model: 5
-            AbstractButton {
-                required property int modelData
-                width: 20
-                height: 20
-                Accessible.name: qsTr("Rate %1 of 5 stars").arg(modelData + 1)
-                contentItem: Text {
-                    text: modelData < card.rating ? "★" : "☆"
-                    color: "#ffd166"
-                    font.pixelSize: 14
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-                onClicked: catalogue.setRating(videoId, modelData + 1)
-            }
+    Menu {
+        id: thumbnailMenu
+        MenuItem { text: qsTr("Open file location"); onTriggered: catalogue.openFileLocation(card.videoId) }
+        MenuItem { text: qsTr("Delete…"); onTriggered: { card.inspect(); window.confirmDelete() } }
+    }
+
+    ToolTip.visible: card.hoverActive && !sessionEngaged
+    ToolTip.delay: 1200
+    ToolTip.text: name
+
+    Connections {
+        target: hoverSession
+        function onFrameReady(id, frameRevision, pts, frame) {
+            if (card.hoverActive && card.sessionEngaged
+                    && id === card.videoId && frameRevision === card.revision)
+                card.liveFrameVisible = true
         }
+        function onFrameChanged() {
+            if (hoverSession.videoId !== card.videoId || hoverSession.lastFramePtsMs < 0)
+                card.liveFrameVisible = false
         }
     }
 
     Connections {
         target: catalogue
         function onSampleTimesReady(videoIdParam, times) {
-            if (videoIdParam === card.videoId)
+            if (window.cachedTimelineEnabled && videoIdParam === card.videoId && card.hoverActive) {
                 card.sampleTimes = times
+                card.updateTarget()
+            }
         }
         function onHoverSourceReady(videoIdParam, revisionParam, path, durationMsParam) {
-            if (videoIdParam !== card.videoId)
+            if (videoIdParam !== card.videoId || !card.hoverActive)
                 return
             // Engage the shared paused session here; empty path means the
             // file is not available and cached feedback carries on (§6).
-            hoverSession.engage(videoIdParam, revisionParam, path, durationMsParam)
-            liveFrameVisible = path !== "" && hoverSession.enabled
+            liveFrameVisible = false
+            sessionEngaged = path !== "" && hoverSession.enabled
+            hoverSession.engage(videoIdParam, revisionParam, path, durationMsParam,
+                                card.pointerTarget())
         }
         function onCacheEntryChanged(changedVideoId, profile) {
-            if (changedVideoId === card.videoId && profile.startsWith("sb-"))
+            if (window.cachedTimelineEnabled && changedVideoId === card.videoId && profile.startsWith("sb-"))
                 catalogue.requestSampleTimes(card.videoId)
         }
     }

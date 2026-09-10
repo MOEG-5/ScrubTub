@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // VideoRow and shared row types used across catalogue, UI, and tests.
 #pragma once
 
 #include <QMetaType>
 #include <QString>
 
-namespace itub {
+namespace scrubtub {
 
 struct VideoRow {
     qint64 id = 0;
@@ -50,10 +50,14 @@ struct ScanProgress {
     quint64 discovered = 0;
     quint64 probed = 0;
     quint64 errors = 0;
+    quint64 remaining = 0;
+    quint64 previewsRemaining = 0;
+    quint64 processed = 0;
+    quint64 failed = 0;
 };
 
-} // namespace itub
+} // namespace scrubtub
 
-Q_DECLARE_METATYPE(itub::VideoRow)
-Q_DECLARE_METATYPE(itub::RootInfo)
-Q_DECLARE_METATYPE(itub::ScanProgress)
+Q_DECLARE_METATYPE(scrubtub::VideoRow)
+Q_DECLARE_METATYPE(scrubtub::RootInfo)
+Q_DECLARE_METATYPE(scrubtub::ScanProgress)

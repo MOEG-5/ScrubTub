@@ -1,31 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Original-file paused scrubbing session (TECH_SPEC.md section 6).
 //
-// Preferred backend: one persistent mpv subprocess per engaged card
-// (technique after the owner's thumbfast reference), driven over its JSON
-// IPC socket, writing the paused frame to an app-owned file that we poll.
-// Seeks use keyframe accuracy while the pointer moves and exact accuracy on
-// settle; audio and subtitles are disabled; the process group is killed on
-// exit. Fallback backend: the shared QMediaPlayer/QVideoSink session.
-//
-// Measured on the reference machine (docs/BENCHMARKS.md): mpv exact seeks
-// update the frame in ~185-260 ms; keyframe seeks are near-instant. The
-// QMediaPlayer path measured 250-360 ms per seek (p95 358-377 ms).
+// One idle mpv process, private IPC, keyframe seeks during motion and exact
+// refinement on settle. Native image output survives stop/loadfile; sources
+// unload on leave while the process stays warm. Cached previews cover missing mpv.
 #pragma once
 
 #include <QElapsedTimer>
 #include <QImage>
+#include <QJsonArray>
 #include <QLocalSocket>
 #include <QObject>
 #include <QProcess>
 #include <QTimer>
 #include <QUrl>
-#include <QVideoSink>
+#include <QTemporaryDir>
+#include <memory>
 
-class QMediaPlayer;
 
-namespace itub {
+namespace scrubtub {
 
 class HoverSession : public QObject {
     Q_OBJECT
@@ -33,6 +27,7 @@ class HoverSession : public QObject {
     Q_PROPERTY(QImage lastFrame READ lastFrame NOTIFY frameChanged FINAL)
     Q_PROPERTY(qint64 lastFramePtsMs READ lastFramePtsMs NOTIFY frameChanged FINAL)
     Q_PROPERTY(bool enabled READ enabled WRITE setEnabled NOTIFY enabledChanged FINAL)
+    Q_PROPERTY(qint64 videoId READ videoId NOTIFY frameChanged FINAL)
 
 public:
     explicit HoverSession(QObject* parent = nullptr);
@@ -42,16 +37,16 @@ public:
     QImage lastFrame() const { return m_lastFrame; }
     qint64 lastFramePtsMs() const { return m_deliveredPtsMs; }
     bool enabled() const { return m_enabled; }
+    qint64 videoId() const { return m_videoId; }
     void setEnabled(bool enabled); // Auto (true) or Cached-only (false)
 
     // Test hooks.
     void setMpvPath(const QString& path) { m_mpvPath = path; }
-    void setFramePollMs(int ms) { m_framePollMs = ms; }
 
 public slots:
     // Called after the hover dwell; loads the source paused with no output.
     void engage(qint64 videoId, qint64 revision, const QString& absolutePath,
-                qint64 durationMs);
+                qint64 durationMs, qint64 initialTimeMs = 0);
     // Pointer target in milliseconds (video-stream duration space).
     void scrub(qint64 timeMs);
     // Pointer exit: show the poster, stop, unload, release handles (§6).
@@ -65,17 +60,22 @@ signals:
     void enabledChanged();
 
 private:
-    enum class Backend { None, Mpv, QtPlayer };
+    enum class Backend { None, Mpv };
 
     void setStatus(const QString& status);
     void engageMpv(const QString& absolutePath);
-    void engageQtPlayer(const QString& absolutePath);
+    void startMpv();
+    void loadMpvSource();
+    qint64 sendMpvCommand(const QJsonArray& command);
+    void readMpvMessages();
+    void failMpv();
     void issueSeek();
     void startMpvSeek(qint64 targetMs, bool exact);
-    void pollFrameFile();
+    void readMpvFrame(qint64 ptsMs);
+    void clearMpvFrames();
     void cleanupMpv();
 
-    QString m_mpvPath;            // resolved once; empty = Qt player backend
+    QString m_mpvPath;            // resolved once; empty = cached previews only
     Backend m_backend = Backend::None;
     bool m_enabled = true;
     QString m_status = QStringLiteral("idle");
@@ -90,22 +90,29 @@ private:
     // mpv backend state.
     QProcess* m_mpv = nullptr;
     QLocalSocket* m_ipc = nullptr;
-    QTimer* m_frameTimer = nullptr;     // polls the frame file
     QTimer* m_settleTimer = nullptr;    // exact seek after the pointer settles
-    QString m_frameFile;
+    QTimer* m_connectTimer = nullptr;
+    QTimer* m_mpvTimeout = nullptr;
+    std::unique_ptr<QTemporaryDir> m_mpvDir;
     QString m_socketPath;
-    qint64 m_lastFileStamp = 0;
+    QString m_pendingPath;
+    QByteArray m_ipcBuffer;
+    qint64 m_commandId = 0;
+    qint64 m_stopRequest = -1;
+    qint64 m_loadRequest = -1;
+    qint64 m_frameRequest = -1;
+    qint64 m_seekRequest = -1;
+    qint64 m_expectedFileId = -1;
+    qint64 m_playingFileId = -1;
+    bool m_mpvLoaded = false;
+    bool m_wantExact = false;
+    bool m_lastSeekExact = false;
     qint64 m_lastSeekedMs = -1;         // last target actually sent to mpv
+    QElapsedTimer m_mpvSeekClock;
 
-    // Qt player backend state (fallback).
-    QMediaPlayer* m_player = nullptr;
-    QVideoSink* m_sink = nullptr;
     QTimer* m_coalesceTimer = nullptr;
     bool m_seekInFlight = false;
-    int m_overBudgetSeeks = 0;
-    QElapsedTimer m_seekTimer;
 
-    int m_framePollMs = 25;
 };
 
-} // namespace itub
+} // namespace scrubtub

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Bounded disposable fixture corpus (PLAN.md "Agent media limits and privacy
 // boundary"): at most 20 derived media files, at most 1 GiB of generated test
 // data, created inside the caller's temporary directory. Enforced here so a
@@ -9,7 +9,7 @@
 #include <QDir>
 #include <QString>
 
-namespace itub::testsupport {
+namespace scrubtub::testsupport {
 
 class FixtureCorpus {
 public:
@@ -48,4 +48,4 @@ private:
     qint64 m_bytes = 0;
 };
 
-} // namespace itub::testsupport
+} // namespace scrubtub::testsupport

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "TagEngine.h"
 
 #include <QChar>
@@ -7,7 +7,7 @@
 
 #include <rapidfuzz/distance/Levenshtein.hpp>
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 
@@ -185,4 +185,4 @@ int TagEngine::editDistanceLimit(int queryTokenLength)
     return 0; // 1–2 characters: exact/prefix/substring only (§8)
 }
 
-} // namespace itub
+} // namespace scrubtub

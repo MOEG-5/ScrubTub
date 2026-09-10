@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Extraction contract checks (TECH_SPEC.md section 12): poster geometry and
 // content, storyboard sample plan/timestamps/atlas, rotation handling,
 // corrupt-input tolerance. Reads the original fixture read-only; generated
@@ -15,13 +15,13 @@
 
 #include "media/Extract.h"
 
-using namespace itub;
+using namespace scrubtub;
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
 static QString fixturePath()
 {
-    const QByteArray env = qgetenv("ITUB_TEST_SOURCE_VIDEO");
-    return env.isEmpty() ? QStringLiteral(ITUB_DEFAULT_SOURCE_FIXTURE)
+    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
+    return env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
                          : QString::fromLocal8Bit(env);
 }
 #endif
@@ -52,7 +52,7 @@ void TestExtract::initTestCase()
 {
     m_ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
     QVERIFY2(!m_ffmpeg.isEmpty(), "ffmpeg required");
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
     if (fixturePath().isEmpty() || !QFileInfo::exists(fixturePath()))
         QSKIP("Source fixture unavailable");
 #else
@@ -83,17 +83,17 @@ void TestExtract::samplePlanForShortClips()
     // Unknown duration: no plan (poster-only path).
     QVERIFY(Extract::samplePlanMs(-1, 24).isEmpty());
     QVERIFY(Extract::samplePlanMs(0, 24).isEmpty());
-    // Long video: full 24 samples from first frame to before the end.
+    // Long video: centered samples spread across the duration.
     const QVector<qint64> long1 = Extract::samplePlanMs(667500, 24);
     QCOMPARE(long1.size(), 24);
-    QCOMPARE(long1.first(), 0);
+    QCOMPARE(long1.first(), 667500 / 48);
     QVERIFY(long1.last() < 667500);
     for (int i = 1; i < long1.size(); ++i)
         QVERIFY(long1.at(i) > long1.at(i - 1)); // strictly increasing
     // A 3 s clip: fewer samples (≥2).
     const QVector<qint64> short1 = Extract::samplePlanMs(3000, 24);
     QCOMPARE(short1.size(), 6); // 3000/500
-    QCOMPARE(short1.first(), 0);
+    QCOMPARE(short1.first(), 250);
 }
 
 void TestExtract::posterGeometryAndContent()
@@ -138,19 +138,20 @@ void TestExtract::storyboardAtlasAndTimestamps()
     request.selectedStreamIndex = 0;
     const ExtractResult result = Extract::storyboard(request);
     QVERIFY2(result.ok, qUtf8Printable(result.error));
-    // 24 samples recorded with actual delivered timestamps.
-    QCOMPARE(result.sampleTimesMs.size(), 24);
+    // Five sparse samples recorded with actual delivered timestamps.
+    QCOMPARE(result.sampleTimesMs.size(), 5);
     // Actual times track the requested plan closely for this fixture
     // (recorded values, not assumed seeks — §6).
-    const QVector<qint64> plan = Extract::samplePlanMs(667500, 24);
+    const QVector<qint64> plan = Extract::samplePlanMs(667500, 5);
     for (int i = 0; i < plan.size(); ++i)
         QVERIFY2(qAbs(result.sampleTimesMs.at(i) - plan.at(i)) < 2000,
                  qPrintable(QStringLiteral("sample %1 off: %2 vs %3")
                                 .arg(i).arg(result.sampleTimesMs.at(i)).arg(plan.at(i))));
     QImage atlas(result.outputPath);
     QVERIFY(!atlas.isNull());
-    QCOMPARE(atlas.width(), 6 * 320); // 6-column atlas
-    QCOMPARE(atlas.height(), 4 * 180);
+    QVERIFY(atlas.width() <= 5 * 240);
+    QVERIFY(atlas.height() <= 240);
+    QVERIFY(QFileInfo(result.outputPath).size() <= kSparsePreviewMaxBytes);
 }
 
 void TestExtract::rotatedClipProducesPortraitPoster()

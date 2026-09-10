@@ -1,4 +1,4 @@
-# Implementation handoff — itub video catalogue
+# Implementation handoff — ScrubTub video catalogue
 
 Status: agent implementation handoff, 2026-09-06. Product behavior follows
 [TECH_SPEC.md](TECH_SPEC.md); direction and milestone order follow
@@ -29,8 +29,7 @@ passed.**
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure     # 8 suites, ~65 s
-./build/bin/itub                               # the app
-./build/bin/hoverbench testvideo1.mp4 --repeats 2 --out out.json
+./build/bin/scrubtub                               # the app
 ```
 
 Test suites: `filesafety` (no-source-writes, symlinks, harness),
@@ -61,9 +60,11 @@ Qt 6.11.1 (FFmpeg backend), FFmpeg n9.0.1. Details in
   the subtitle value (669 360 ms) — the hover session clamps to the stored
   video-stream duration instead.
 - **Hover scrubbing:** the default hover backend is a persistent mpv
-  subprocess (owner's thumbfast reference): exact-on-settle seeks at
-  ~185–260 ms with instant cached tiles during motion; QMediaPlayer fallback
-  when mpv is absent. Cache hygiene: orphaned artifacts are swept at
+  subprocess (owner's thumbfast reference), reused across hovers with a
+  private IPC socket. Keyframe previews measured 30–51 ms during motion;
+  exact refinement follows after settling (223–587 ms from scrub on the
+  fixture). Sources unload on leave; cached feedback stays until live frames
+  arrive. Cached previews remain the fallback when mpv is unavailable. See BENCHMARKS.md for limits. Cache hygiene: orphaned artifacts are swept at
   startup, previews of vanished videos are purged at scan completion, root
   removal removes their artifacts, and an optional "Check folders on
   startup" refresh (default on) reconciles moves/additions/deletions.
@@ -73,7 +74,9 @@ Qt 6.11.1 (FFmpeg backend), FFmpeg n9.0.1. Details in
   a 24-frame storyboard lands near the 10 s budget on this SSD machine.
   (Candidate follow-up: drive storyboard extraction through the same
   persistent-mpv mechanism as the hover session.)
-- **Full agent suite:** 8/8 ctest suites green, repeated runs stable.
+- **Validation:** the prior full agent run passed 8/8 ctest suites. The
+  live-seek correction passed the targeted hoversession and preview suites,
+  plus isolated GUI checks; see BENCHMARKS.md.
 
 ## Remaining release blockers (owner validation pending)
 

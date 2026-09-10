@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "TreeSnapshot.h"
 
 #include <QCryptographicHash>
@@ -9,7 +9,7 @@
 
 #include <sys/stat.h>
 
-namespace itub::testsupport {
+namespace scrubtub::testsupport {
 
 namespace {
 
@@ -140,4 +140,4 @@ QStringList diffTrees(const TreeSnapshot& before, const TreeSnapshot& after)
     return diffs;
 }
 
-} // namespace itub::testsupport
+} // namespace scrubtub::testsupport

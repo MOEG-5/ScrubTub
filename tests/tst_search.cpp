@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Search and tag contract checks (TECH_SPEC.md sections 7, 8, 12):
 // table-driven filename tag examples, Unicode normalization, short queries,
 // typo cutoffs, combined range/tag filters, nulls, stable ties, manual/
@@ -11,6 +11,7 @@
 #include <QtTest>
 
 #include "catalogue/Catalogue.h"
+#include "catalogue/CatalogueProxy.h"
 #include "catalogue/CatalogueModel.h"
 #include "catalogue/Database.h"
 #include "catalogue/TagEngine.h"
@@ -18,13 +19,13 @@
 
 #include <memory>
 
-using namespace itub;
+using namespace scrubtub;
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
 static QString fixturePath()
 {
-    const QByteArray env = qgetenv("ITUB_TEST_SOURCE_VIDEO");
-    return env.isEmpty() ? QStringLiteral(ITUB_DEFAULT_SOURCE_FIXTURE)
+    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
+    return env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
                          : QString::fromLocal8Bit(env);
 }
 #endif
@@ -71,7 +72,7 @@ void TestSearch::initTestCase()
     m_ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
     QVERIFY(!m_ffprobe.isEmpty() && !m_ffmpeg.isEmpty());
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
     if (fixturePath().isEmpty() || !QFileInfo::exists(fixturePath()))
         QSKIP("Source fixture unavailable");
 #else
@@ -98,9 +99,10 @@ bool TestSearch::makeCatalogue(const QString& corpusName)
                 m_lastResult = ids;
             },
             Qt::DirectConnection);
+    connect(m_cat.get(), &Catalogue::rowsPageReady, &m_model, &CatalogueModel::applyPage);
     // Detail paging: direct in-thread fetch chain (§8 pages of 200).
-    m_model.setFetchCallback([this](const QList<qint64>& ids) {
-        m_cat->fetchRowsPage(ids);
+    m_model.setFetchCallback([this](const QList<qint64>& ids, quint64 generation) {
+        m_cat->fetchRowsPage(ids, generation);
     });
 
     testsupport::FixtureCorpus corpus(
@@ -269,6 +271,37 @@ void TestSearch::combinedFiltersAndNulls()
     exact.ratingMode = 2;
     exact.ratingValue = 4;
     QCOMPARE(runSearch(exact).size(), 1);
+
+    QuerySpec rated;
+    rated.ratingMode = 3;
+    QCOMPARE(runSearch(rated), QList<qint64>{id});
+    QuerySpec ratingRange;
+    ratingRange.ratingMin = 3;
+    ratingRange.ratingMax = 4;
+    QCOMPARE(runSearch(ratingRange), QList<qint64>{id});
+    ratingRange.ratingMax = 3;
+    QVERIFY(runSearch(ratingRange).isEmpty());
+    ratingRange.ratingMin = 0;
+    QCOMPARE(runSearch(ratingRange).size(), 4); // includes unrated, excludes four stars
+    ratingRange.ratingMax = 0;
+    QCOMPARE(runSearch(ratingRange).size(), 4);
+
+    // QML's proxy combines ranges with normalized tag filters.
+    m_cat->addManualTag(id, QStringLiteral("Archive"));
+    CatalogueProxy proxy(m_cat.get(), &m_model);
+    QSignalSpy proxyResult(&proxy, &CatalogueProxy::searchCompleted);
+    QSignalSpy bounds(&proxy, &CatalogueProxy::filterBoundsReady);
+    proxy.search({{QStringLiteral("ratingMin"), 3}, {QStringLiteral("ratingMax"), 4},
+                  {QStringLiteral("includeAllTags"), QStringList{QStringLiteral(" ARCHIVE ")}}});
+    QTRY_COMPARE(proxyResult.size(), 1);
+    QCOMPARE(proxyResult.at(0).at(1).value<QList<qint64>>(), QList<qint64>{id});
+    QCOMPARE(bounds.size(), 1);
+    QCOMPARE(bounds.at(0).at(1).toLongLong(), 667500);
+    QVERIFY(bounds.at(0).at(2).toLongLong() > 0);
+    proxy.search({{QStringLiteral("excludeTags"), QStringList{QStringLiteral("ARCHIVE")}}});
+    QTRY_COMPARE(proxyResult.size(), 2);
+    QCOMPARE(proxyResult.at(1).at(1).value<QList<qint64>>().size(), 4);
+    QCOMPARE(bounds.at(1), bounds.at(0)); // filtering does not shrink the slider scale
 
     // Resolution preset 1080 matches all probed fixture copies; unknown
     // dimensions (no videos here) would not match numeric ranges.

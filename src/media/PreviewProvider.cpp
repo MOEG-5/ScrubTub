@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "PreviewProvider.h"
 
 #include <QImage>
 #include <QQuickTextureFactory>
 
-namespace itub {
+namespace scrubtub {
 
 PreviewProvider::PreviewProvider(PathResolver resolver)
     : m_resolver(std::move(resolver))
@@ -89,4 +89,4 @@ QString PreviewResponse::errorString() const
     return m_error;
 }
 
-} // namespace itub
+} // namespace scrubtub

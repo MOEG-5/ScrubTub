@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Tree snapshot and diff used by the no-source-writes contract check
 // (TECH_SPEC.md section 12). Test support only; not linked into the product.
 #pragma once
@@ -11,7 +11,7 @@
 #include <QStringList>
 #include <QVector>
 
-namespace itub::testsupport {
+namespace scrubtub::testsupport {
 
 struct FileEntry {
     quint64 size = 0;
@@ -37,4 +37,4 @@ bool snapshotTree(const QString& root, TreeSnapshot* out, QString* error);
 // metadata, identical contents, and unchanged directory listings.
 QStringList diffTrees(const TreeSnapshot& before, const TreeSnapshot& after);
 
-} // namespace itub::testsupport
+} // namespace scrubtub::testsupport

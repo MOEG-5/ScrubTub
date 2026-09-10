@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Catalogue store, scan coordinator, and media job scheduler
 // (TECH_SPEC.md sections 1, 4, 5, 6).
 //
@@ -12,6 +12,7 @@
 
 #include "VideoRow.h"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QStringList>
@@ -25,19 +26,24 @@ class QLockFile;
 class QThreadPool;
 class QTimer;
 
-namespace itub {
+namespace scrubtub {
 
 class Database;
 struct ProbeResult;
 struct ExtractResult;
 
-// Search snapshot record (§8): compact pre-normalized text per row.
+// Search snapshot record (§8): compact pre-normalized text per row. Every
+// derived string is computed once here; matching and relevance sorting must
+// stay free of normalization work (§8 runs per keystroke).
 struct SearchRecord {
     qint64 id = 0;
     QString fileName;
     QString relPath;
     QStringList tokens;       // normalized name/path/tag tokens
     QStringList foldedTokens; // diacritic-folded copies
+    QString foldedName;       // diacritic-folded fileName
+    QString foldedPath;       // diacritic-folded relPath
+    QString normName;         // normalize()d fileName, the relevance sort key
 };
 
 // Structured query (§1, §8): all categories AND-combined; bounds inclusive;
@@ -56,8 +62,10 @@ struct QuerySpec {
     qlonglong durationMinMs = -1;
     qlonglong durationMaxMs = -1;
 
-    int ratingMode = 0;              // 0 any, 1 unrated, 2 exact value
+    int ratingMode = 0;              // 0 any, 1 unrated, 2 exact value, 3 rated
     int ratingValue = 0;
+    int ratingMin = -1;              // range treats unrated as 0
+    int ratingMax = -1;
 
     QStringList includeAllTags;      // normalized; every one required
     QStringList includeAnyTags;      // normalized; at least one
@@ -108,14 +116,15 @@ public slots:
     void refreshRows();
 
     // Preview artifacts. Poster generation is queued automatically after a
-    // successful probe; storyboards are queued on demand (hover or explicit
-    // precompute).
+    // successful probe; sparse previews follow once all primary work is done.
     void requestStoryboard(qint64 videoId);
     void requestPoster(qint64 videoId);
 
     // Open in the system default player (§9). Counts one view per accepted
     // launch request; failed handoffs do not count.
     void openInDefaultPlayer(qint64 videoId);
+    void openFileLocation(qint64 videoId);
+    void requestFileInfo(qint64 videoId);
 
     // Restores the previous session's roots and rows (§1 persistence).
     // Called after UI connections are in place so nothing is lost.
@@ -133,8 +142,8 @@ public slots:
     // Live search (§8): structured filters first, then every query token must
     // match; stale results are discarded by generation. Details are fetched
     // by ID pages on demand.
-    void search(const itub::QuerySpec& spec);
-    void fetchRowsPage(const QList<qint64>& videoIds);
+    void search(const scrubtub::QuerySpec& spec);
+    void fetchRowsPage(const QList<qint64>& videoIds, quint64 generation);
     void clearSearch();
     void setPageSize(int n) { m_pageSize = n; }
 
@@ -163,11 +172,13 @@ public slots:
     void requestCacheUsage();
 
 signals:
-    void rootAdded(const itub::RootInfo& root);
+    void filterBoundsReady(qint64 rootId, qint64 durationMs, qint64 sizeBytes);
+    void rootAdded(const scrubtub::RootInfo& root);
     void rootRemoved(qint64 rootId);
     void rootRejected(const QString& reason);
-    void scanProgress(const itub::ScanProgress& progress);
-    void rowsChanged(const QList<itub::VideoRow>& rows, bool reset);
+    void scanProgress(const scrubtub::ScanProgress& progress);
+    void rowsChanged(const QList<scrubtub::VideoRow>& rows, bool reset);
+    void rowsPageReady(const QList<scrubtub::VideoRow>& rows, const QList<qint64>& requested, quint64 generation);
     void ratingCommitted(qint64 videoId, int rating);
     void cacheEntryChanged(qint64 videoId, const QString& profile);
     void hoverSourceReady(qint64 videoId, qint64 revision, const QString& absolutePath,
@@ -180,6 +191,7 @@ signals:
     void trashResult(qint64 videoId, bool ok, const QString& reason);
     void backupExported(const QString& destPath);
     void backupImported();
+    void fileInfoReady(qint64 videoId, const QVariantMap& info);
     void cacheUsageReady(qint64 bytes);
     void settingsReady(const QVariantMap& settings);
     void operationFailed(const QString& message);
@@ -187,6 +199,7 @@ signals:
 private:
     struct ActiveJob {
         qint64 jobId = 0;
+        qint64 rootId = 0;
         qint64 videoId = 0;
         qint64 revision = 0;
         QString kind;                 // probe|poster|storyboard
@@ -202,15 +215,19 @@ private:
     void runEnumerationLocked(qint64 rootId, bool force);
     void ensureDispatchTimer();
     void dispatchJobs();
+    void queueSparsePreviews();
     void runJob(ActiveJob* job, const QString& absPath);
     void finishJob(ActiveJob* job, std::optional<ProbeResult> probe,
                    std::optional<ExtractResult> extract);
-    void killActiveJobs();
+    void killActiveJobs(qint64 rootId = 0);
     bool applyProbeResult(qint64 videoId, qint64 revision, const ProbeResult& result);
     void applyExtractResult(ActiveJob* job, const ExtractResult& result);
     void enqueuePreviewJobs(qint64 videoId, bool includeStoryboard);
     void enforceCacheLimit();
     void emitProgress(const QString& state);
+    // Same values, but skips the aggregate queries when the state has not
+    // changed and the last emission is recent (§5 progress is text-only).
+    void emitProgressThrottled(const QString& state);
     void emitRows(const QList<VideoRow>& rows);
     VideoRow readRow(qint64 videoId);
     QString artifactPath(qint64 videoId, qint64 revision, const QString& profile) const;
@@ -246,17 +263,20 @@ private:
     std::atomic_bool m_scanActive{false};
     qint64 m_scannedRootId = 0;
     bool m_scanForce = false;
+    bool m_sparsePassQueued = false;
     QString m_scanState = QStringLiteral("idle");
+    QString m_lastProgressState;
+    QElapsedTimer m_progressClock;
     quint64 m_discovered = 0;
     quint64 m_errors = 0;
     quint64 m_probed = 0;
     QTimer* m_dispatchTimer = nullptr;
     QThreadPool* m_pool = nullptr;
     QList<ActiveJob*> m_activeJobs;
-    int m_jobConcurrency = 2;      // §5: at most two active media processes
+    int m_jobConcurrency = 2;      // 2–4 workers, selected from CPU capacity
     int m_probeTimeoutMs = 30000;  // §5: 30 s probe timeout
     int m_previewTimeoutMs = 60000; // §5: 60 s per-preview-job timeout
     qint64 m_diskCacheLimit = 5LL * 1024 * 1024 * 1024; // §6: 5 GiB default
 };
 
-} // namespace itub
+} // namespace scrubtub

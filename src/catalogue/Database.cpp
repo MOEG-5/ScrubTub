@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "Database.h"
 
 #include <QFile>
 
 #include <utility>
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 
@@ -495,4 +495,4 @@ void Statement::reset()
         sqlite3_reset(m_stmt);
 }
 
-} // namespace itub
+} // namespace scrubtub

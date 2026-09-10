@@ -16,7 +16,7 @@ graphics (VAAPI device present). Release build, GCC 16.2.1, Qt 6.11.1
 system involved; GPU upload costs are therefore *not* included and are noted
 as unmeasured.
 
-**Command** (repeatable; tool `bench/hoverbench.cpp`):
+**Historical command** (the Qt Multimedia benchmark was removed after choosing mpv):
 
 ```sh
 ./build/bin/hoverbench testvideo1.mp4 --repeats 2 \
@@ -76,9 +76,15 @@ to the owner-run gates in TECH_SPEC.md section 11.
 
 ## Milestone follow-up — mpv hover backend (2026-09-06)
 
+**Correction:** the [live-seek investigation](LIVESEEK_INVESTIGATION.md)
+reproduced working paused keyframe output in 12.5–17.1 ms with the original
+mpv arguments. The no-repaint claim below is superseded. The original implementation
+waited 220 ms before starting an exact seek and hid cached tiles in live
+mode, so the following historical description overstates motion feedback.
+
 After the milestone-0 verdict (QMediaPlayer paused seeks accurate but slow),
 the owner pointed at the thumbfast technique (po5/thumbfast, MPL-2.0 — studied
-for its approach, not copied). itub now ships an mpv-backed hover session:
+for its approach, not copied). scrubtub now ships an mpv-backed hover session:
 one persistent `mpv --no-config --idle --pause` subprocess per engaged card,
 driven over its JSON IPC socket, writing the paused frame as raw BGRA to an
 app-owned file that the session polls. Measured on the same reference machine
@@ -103,7 +109,70 @@ Findings recorded along the way:
   (669 360 ms); the hover session clamps to the ffprobe video-stream
   duration (667 500 ms) stored in the catalogue.
 
-mpv is optional: without it the QMediaPlayer backend is used automatically.
+mpv is required for live previews; cached previews are used when it is unavailable.
+
+## Live-seek correction — persistent process (2026-09-06)
+
+The product now sends keyframe seeks during motion (at most every 50 ms),
+then requests exact refinement after 100 ms without a changed target. One
+seek is in flight with a replaceable latest target. Superseded exact frames
+are discarded. The initial hover position is passed with file loading;
+posters/cached samples remain visible until a matching live frame arrives.
+
+One idle mpv process is prewarmed and reused across hovers. `stop` unloads
+sources on leave without killing the process. The old `--o` encoder could
+not reinitialize video output after stop/loadfile on mpv 0.41; native
+`--vo=image` with uncompressed PNG output supports this lifecycle. Images
+are consumed after `playback-restart`, paired with mpv's paused `time-pos`,
+and deleted. There is no frame-file polling or blocking IPC connection wait.
+IPC uses an owner-only temporary `scrubtub-hover-…/ipc.sock` directory (a unique
+named pipe on Windows), never the desktop player's default socket. User
+mpv configuration/scripts and media-controls integration are disabled.
+
+**Measured through the updated HoverSession**, same supplied H.264 fixture,
+Release build, Qt offscreen, software decoding, warm file cache, no catalogue
+background jobs. Five observations, not a codec-wide percentile claim:
+
+| Target (seconds) | First moving preview (ms) | Exact refinement (ms from scrub) |
+| --- | --- | --- |
+| 10 | 30 | 344 |
+| 300 | 40 | 223 |
+| 650 | 30 | 457 |
+| 123.456 | 32 | 587 |
+| 500 | 30 | 345 |
+
+A repeat run measured moving previews at 30–51 ms and exact refinement at
+232–425 ms. The ranges vary with system load; the table retains the first
+run rather than selecting only the fastest measurements.
+
+The original HoverSession took 445–568 ms to show any seek update and
+produced no frames during a 600 ms motion burst. Moving previews now meet
+the 200 ms gate on this fixture. **Exact refinement still misses that gate**;
+keyframe previews are approximate and show their actual sampled position.
+An initial un-prewarmed engagement measured 236 ms to its first preview,
+excluding the QML 120 ms dwell. Unloading still requires reopening the
+source/decoder on re-hover, though the mpv process remains alive.
+
+The supplied thumbfast configuration's hardware mode was also compared:
+`auto`/`auto-copy` selected Vulkan copy on this machine and did not reliably
+improve these CPU-readable previews. Software decoding remains the default;
+`SCRUBTUB_MPV_HWDEC=auto-copy ./build/bin/scrubtub` enables an owner comparison.
+Thumbfast's small demux buffer, disabled readahead, two decoding threads,
+fast scaler, and skipped loop filtering are used.
+
+Validation: `ctest --test-dir build -R '^(hoversession|preview)$' -V`
+checks motion progress, latest-target settling, actual quantized timestamps,
+initial position, process reuse, private socket arguments, source switching,
+file-handle release, cached-only mode, and missing-mpv cached fallback. A disposable Xvfb
+session with one fixture copy also verified stationary initial hover,
+changing positions during motion, unload on leave, and re-hover with the
+same process. Additional GUI checks verified one-second keyboard seeking
+with a visible details preview and that cached-only mode stops mpv. An
+offscreen QML pixel test verifies that hovering selects a single atlas tile.
+Atlas cropping uses a clipped/translated image:
+`sourceClipRect` did not crop textures from the async image provider.
+No real desktop/profile/library was used. Windows, other
+codecs, cold storage, and a full thumbfast UI comparison remain unmeasured.
 
 ## Owner-run large-library benchmark instructions
 

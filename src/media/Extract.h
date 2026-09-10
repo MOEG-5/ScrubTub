@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Poster and storyboard extraction (TECH_SPEC.md section 6): seek-based,
 // selected-stream only, actual delivered timestamps recorded, bounded logs,
 // app-owned temp destinations, source files only ever read.
@@ -14,7 +14,11 @@
 
 #include "Probe.h"
 
-namespace itub {
+namespace scrubtub {
+
+inline constexpr char kSparsePreviewProfile[] = "sb-240-5-v2";
+inline constexpr qint64 kSparsePreviewMaxBytes = 64 * 1024;
+inline constexpr qint64 kSparsePreviewCacheBytes = 128 * 1024 * 1024;
 
 struct ExtractResult {
     bool ok = false;
@@ -42,9 +46,9 @@ struct StoryboardRequest {
     QString outputPath;      // atlas JPEG destination
     qint64 durationMs = -1;
     int selectedStreamIndex = 0;
-    int sampleCount = 24;
-    int tileWidth = 320;
-    int columns = 6;
+    int sampleCount = 5;
+    int tileWidth = 240; // longest edge; both dimensions are bounded
+    int columns = 5;
     int timeoutMs = 60000;
 };
 
@@ -68,4 +72,4 @@ public:
     static QVector<qint64> samplePlanMs(qint64 durationMs, int sampleCount);
 };
 
-} // namespace itub
+} // namespace scrubtub

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Read-only recursive discovery (TECH_SPEC.md sections 3 and 5).
 //
 // This scanner never writes to the source tree: it only stats and enumerates.
@@ -15,7 +15,7 @@
 #include <atomic>
 #include <functional>
 
-namespace itub {
+namespace scrubtub {
 
 struct DiscoveryOptions {
     QString rootPath;             // native absolute path; must not be a symlink
@@ -62,4 +62,4 @@ public:
                                          BatchSink sink = {});
 };
 
-} // namespace itub
+} // namespace scrubtub

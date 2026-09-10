@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // App-owned storage locations (TECH_SPEC.md section 3): the database and cache
 // live in fresh app-owned directories from QStandardPaths, never inside a
 // catalogue root.
@@ -7,7 +7,7 @@
 
 #include <QString>
 
-namespace itub {
+namespace scrubtub {
 
 class ProfilePaths {
 public:
@@ -24,4 +24,4 @@ public:
                            QString* error = nullptr);
 };
 
-} // namespace itub
+} // namespace scrubtub

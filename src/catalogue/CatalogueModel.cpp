@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "CatalogueModel.h"
 
 #include <algorithm>
 
-namespace itub {
+namespace scrubtub {
 
 QString formatIecBytes(qint64 bytes)
 {
@@ -119,12 +119,17 @@ QHash<int, QByteArray> CatalogueModel::roleNames() const
 void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
 {
     if (reset) {
+        ++m_generation;
+        m_requestedDetails.clear();
         beginResetModel();
         m_rows.clear();
         m_order.clear();
+        m_orderSet.clear();
+        m_missingCursor = 0;
         for (const VideoRow& row : rows) {
             m_rows.insert(row.id, row);
             m_order.append(row.id);
+            m_orderSet.insert(row.id);
         }
         std::sort(m_order.begin(), m_order.end(), [this](qint64 a, qint64 b) {
             return m_rows.value(a).fileName.compare(m_rows.value(b).fileName,
@@ -136,10 +141,10 @@ void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
         return;
     }
 
-    bool inserted = false;
     for (const VideoRow& row : rows) {
+        if (row.id <= 0) continue;
         const auto it = m_rows.constFind(row.id);
-        if (it != m_rows.constEnd()) {
+        if (it != m_rows.constEnd() || m_orderSet.contains(row.id)) {
             m_rows.insert(row.id, row);
             const int pos = m_order.indexOf(row.id);
             if (pos >= 0) {
@@ -159,21 +164,24 @@ void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
                     - m_order.begin());
             beginInsertRows(QModelIndex(), insertAt, insertAt);
             m_order.insert(insertAt, row.id);
+            m_orderSet.insert(row.id);
+            if (insertAt <= m_missingCursor)
+                ++m_missingCursor; // keep the cursor on the same boundary
             endInsertRows();
             emit countChanged();
-            inserted = true;
         }
     }
-    if (inserted)
-        requestMissingDetails(); // chain the next page (§8)
 }
 
 void CatalogueModel::setOrder(const QList<qint64>& ids, bool isSearchResult)
 {
     Q_UNUSED(isSearchResult);
     ++m_generation;
+    m_requestedDetails.clear();
     beginResetModel();
     m_order = ids; // IDs without details yet fetch their pages on demand
+    m_orderSet = QSet<qint64>(ids.cbegin(), ids.cend());
+    m_missingCursor = 0;
     endResetModel();
     emit countChanged();
     requestMissingDetails();
@@ -184,9 +192,8 @@ void CatalogueModel::setFetchCallback(FetchCallback callback)
     m_fetch = std::move(callback);
 }
 
-// Requests detail pages for IDs missing from the loaded set (§8). Pages
-// chain until the view is complete; a synchronous fetch triggers re-entry,
-// so the guard is held for the whole chain.
+// Request each ID once per order generation. Async delivery must return to the
+// event loop, and synchronous test callbacks must not recurse through pages.
 void CatalogueModel::requestMissingDetails()
 {
     if (!m_fetch || m_fetching)
@@ -194,17 +201,63 @@ void CatalogueModel::requestMissingDetails()
     m_fetching = true;
     for (;;) {
         QList<qint64> missing;
-        for (const qint64 id : m_order) {
-            if (!m_rows.contains(id) && !missing.contains(id))
+        // Resume where the last page stopped instead of rescanning the order.
+        while (m_missingCursor < m_order.size()) {
+            const qint64 id = m_order.at(m_missingCursor);
+            if (!m_rows.contains(id) && !m_requestedDetails.contains(id)) {
                 missing.append(id);
+                m_requestedDetails.insert(id);
+            }
+            ++m_missingCursor;
             if (missing.size() >= m_pageSize)
                 break;
         }
         if (missing.isEmpty())
             break;
-        m_fetch(missing); // may synchronously insert rows via applyRows
+        const auto generation = m_generation;
+        m_fetch(missing, generation);
+        // A queued reply has not arrived yet: let it request the next page.
+        if (generation == m_generation && m_orderSet.contains(missing.first())
+            && !m_rows.contains(missing.first()))
+            break;
     }
     m_fetching = false;
+}
+
+void CatalogueModel::applyPage(const QList<VideoRow>& rows,
+                               const QList<qint64>& requested, quint64 generation)
+{
+    if (generation != m_generation)
+        return;
+    // Page membership and order membership are set lookups: per-row linear
+    // scans over the whole order were the dominant cost of detail paging.
+    const QSet<qint64> requestedSet(requested.cbegin(), requested.cend());
+    QSet<qint64> received;
+    QList<VideoRow> visibleRows;
+    for (const auto& row : rows) {
+        if (row.id > 0 && requestedSet.contains(row.id) && m_orderSet.contains(row.id)) {
+            received.insert(row.id);
+            visibleRows.append(row);
+        }
+    }
+    // A video may have been removed between the search and its page reply.
+    for (const auto id : requested) {
+        if (received.contains(id))
+            continue;
+        const int pos = m_order.indexOf(id);
+        if (pos < 0)
+            continue;
+        beginRemoveRows({}, pos, pos);
+        m_order.removeAt(pos);
+        m_orderSet.remove(id);
+        m_rows.remove(id);
+        if (pos < m_missingCursor)
+            --m_missingCursor;
+        endRemoveRows();
+        emit countChanged();
+    }
+    applyRows(visibleRows, false);
+    requestMissingDetails();
 }
 
 void CatalogueModel::applyProgress(const ScanProgress& progress)
@@ -213,7 +266,11 @@ void CatalogueModel::applyProgress(const ScanProgress& progress)
     m_discovered = progress.discovered;
     m_probed = progress.probed;
     m_errors = progress.errors;
+    m_remaining = progress.remaining;
+    m_previewsRemaining = progress.previewsRemaining;
+    m_processed = progress.processed;
+    m_failed = progress.failed;
     emit progressChanged();
 }
 
-} // namespace itub
+} // namespace scrubtub

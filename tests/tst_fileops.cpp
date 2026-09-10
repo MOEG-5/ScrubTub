@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Milestone-4 contract checks (TECH_SPEC.md sections 3, 4, 12): explicit
 // authorized mutation via platform Trash only, identity re-check, no
 // permanent-delete fallback, backup/restore preserving all annotations,
@@ -19,13 +19,13 @@
 
 #include <memory>
 
-using namespace itub;
+using namespace scrubtub;
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
 static QString fixturePath()
 {
-    const QByteArray env = qgetenv("ITUB_TEST_SOURCE_VIDEO");
-    return env.isEmpty() ? QStringLiteral(ITUB_DEFAULT_SOURCE_FIXTURE)
+    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
+    return env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
                          : QString::fromLocal8Bit(env);
 }
 #endif
@@ -74,7 +74,7 @@ void TestFileOps::initTestCase()
     m_ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
     m_ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
     QVERIFY(!m_ffprobe.isEmpty() && !m_ffmpeg.isEmpty());
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
     if (fixturePath().isEmpty() || !QFileInfo::exists(fixturePath()))
         QSKIP("Source fixture unavailable");
 #else

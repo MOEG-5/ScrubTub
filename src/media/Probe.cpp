@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 #include "Probe.h"
 
 #include <QJsonArray>
@@ -16,7 +16,7 @@
 #include <unistd.h>
 #endif
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 constexpr int kMaxStderrBytes = 64 * 1024; // TECH_SPEC.md section 5
@@ -219,4 +219,4 @@ ProbeResult Probe::parse(const QByteArray& json)
     return result;
 }
 
-} // namespace itub
+} // namespace scrubtub

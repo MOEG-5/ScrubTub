@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Milestone-4 catalogue layer: explicit Trash action, catalogue backup and
 // restore, cache controls, and UI settings persistence. Included by
 // Catalogue.cpp; every function runs on the catalogue thread
@@ -19,7 +19,7 @@
 #include <signal.h>
 #endif
 
-namespace itub {
+namespace scrubtub {
 
 namespace {
 // Settings persisted across restarts (§10): useful UI state only.
@@ -113,7 +113,7 @@ void Catalogue::exportBackup(const QString& destPathIn)
         return;
     }
     // App-owned temp destination, then atomic rename (§5).
-    const QString tempPath = destPath + QStringLiteral(".itub-tmp");
+    const QString tempPath = destPath + QStringLiteral(".scrubtub-tmp");
     QFile::remove(tempPath);
     QString error;
     if (!m_db->backupTo(tempPath, &error)) {
@@ -226,7 +226,7 @@ void Catalogue::purgeOrphanedCacheFiles()
             // Owned artifacts match the "<video>-<revision>-<profile>.jpg"
             // pattern; anything else in this directory is not ours to touch.
             if (name.endsWith(QLatin1String(".jpg"))
-                && QRegularExpression(QStringLiteral("^\d+-\d+-[a-z0-9-]+\.jpg$"))
+                && QRegularExpression(QStringLiteral(R"(^\d+-\d+-[a-z0-9-]+\.jpg$)"))
                        .match(name)
                        .hasMatch())
                 QFile::remove(m_cacheDir + QLatin1Char('/') + name);
@@ -264,6 +264,7 @@ void Catalogue::purgeCacheForVideos(const QList<qint64>& videoIds)
 
 void Catalogue::clearPreviews()
 {
+    m_sparsePassQueued = false;
     // Remove only owned artifacts: rows first (paths), then the files, then
     // any leftover temp directories from interrupted extractions.
     QStringList relPaths;
@@ -367,4 +368,4 @@ void Catalogue::setSettingText(const char* key, const QString& value)
     st.run();
 }
 
-} // namespace itub
+} // namespace scrubtub

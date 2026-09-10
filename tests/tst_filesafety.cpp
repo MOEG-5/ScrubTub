@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // File-safety contract checks (TECH_SPEC.md sections 3 and 12, milestone 0).
 //
 // Every test operates on a freshly created disposable corpus in a temporary
@@ -21,11 +21,11 @@
 #include "testsupport/FixtureCorpus.h"
 #include "testsupport/TreeSnapshot.h"
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
 #include <cstdlib>
 #endif
 
-using namespace itub;
+using namespace scrubtub;
 
 class TestFileSafety : public QObject {
     Q_OBJECT
@@ -35,6 +35,7 @@ private slots:
     void cleanupTestCase();
 
     void profileDirsAreAppOwned();
+    void renamedAppReusesLegacyProfile();
     void scannerFindsAndSkipsCorrectly();
     void scannerRejectsSymlinkedRoot();
     void noWritesDuringScan();
@@ -63,14 +64,14 @@ void TestFileSafety::initTestCase()
     qputenv("XDG_CACHE_HOME", m_profileBase.filePath(QStringLiteral("cache")).toUtf8());
     qputenv("XDG_CONFIG_HOME", m_profileBase.filePath(QStringLiteral("config")).toUtf8());
 
-#ifdef ITUB_DEFAULT_SOURCE_FIXTURE
-    const QByteArray env = qgetenv("ITUB_TEST_SOURCE_VIDEO");
-    m_originalFixture = env.isEmpty() ? QStringLiteral(ITUB_DEFAULT_SOURCE_FIXTURE)
+#ifdef SCRUBTUB_DEFAULT_SOURCE_FIXTURE
+    const QByteArray env = qgetenv("SCRUBTUB_TEST_SOURCE_VIDEO");
+    m_originalFixture = env.isEmpty() ? QStringLiteral(SCRUBTUB_DEFAULT_SOURCE_FIXTURE)
                                       : QString::fromLocal8Bit(env);
 #endif
     if (m_originalFixture.isEmpty() || !QFileInfo::exists(m_originalFixture))
         qInfo("No source fixture available; media-dependent tests will skip. "
-              "Set ITUB_TEST_SOURCE_VIDEO to enable them.");
+              "Set SCRUBTUB_TEST_SOURCE_VIDEO to enable them.");
     else
         QVERIFY(fixtureHash(&m_originalFixtureStat, &m_originalFixtureHash));
 }
@@ -149,6 +150,29 @@ void TestFileSafety::profileDirsAreAppOwned()
     // Profile IDs are sanitized against traversal.
     QVERIFY(ProfilePaths::profileDataDir(QStringLiteral("../escape")).endsWith(
         QStringLiteral("profiles/escape")));
+}
+
+void TestFileSafety::renamedAppReusesLegacyProfile()
+{
+    const QString oldOrg = QCoreApplication::organizationName();
+    const QString oldName = QCoreApplication::applicationName();
+    QCoreApplication::setOrganizationName(QStringLiteral("scrubtub-project"));
+    QCoreApplication::setApplicationName(QStringLiteral("scrubtub"));
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString legacy = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+        + QStringLiteral("/itub-project/itub");
+    const QString suffix = QStringLiteral("/profiles/default");
+    const QString fresh = ProfilePaths::profileDataDir();
+    const bool madeLegacy = QDir().mkpath(legacy + suffix);
+    const QString reused = ProfilePaths::profileDataDir();
+    const bool madeNew = QDir().mkpath(base + suffix);
+    const QString preferred = ProfilePaths::profileDataDir();
+    QCoreApplication::setOrganizationName(oldOrg);
+    QCoreApplication::setApplicationName(oldName);
+    QVERIFY(madeLegacy && madeNew);
+    QCOMPARE(fresh, base + suffix);
+    QCOMPARE(reused, legacy + suffix);
+    QCOMPARE(preferred, base + suffix);
 }
 
 void TestFileSafety::scannerFindsAndSkipsCorrectly()

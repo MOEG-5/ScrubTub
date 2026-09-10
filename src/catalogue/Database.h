@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Copyright (C) 2026 the itub authors.
+// Copyright (C) 2026 the scrubtub authors.
 // Minimal RAII wrapper over SQLite's C API (TECH_SPEC.md section 4).
 // One connection per worker thread; WAL; foreign keys; bounded busy timeout;
 // transactional writes with synchronous=FULL for annotation durability.
@@ -13,7 +13,7 @@
 #include <functional>
 #include <optional>
 
-namespace itub {
+namespace scrubtub {
 
 class Statement;
 
@@ -110,4 +110,4 @@ private:
     sqlite3_stmt* m_stmt = nullptr;
 };
 
-} // namespace itub
+} // namespace scrubtub

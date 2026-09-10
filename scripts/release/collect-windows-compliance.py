@@ -4,6 +4,7 @@
 import argparse
 from collections import defaultdict
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -113,6 +114,11 @@ def main():
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(candidate, destination)
                     found += 1
+        if not found:
+            spec = importlib.util.spec_from_file_location('source_notices', Path(__file__).with_name('source-notices.py'))
+            helper = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(helper)
+            found = helper.collect(target, notice)
         if not found:
             raise RuntimeError(f'No package license notices for {package}; inspect signed source package')
         components[package] = dict(version=version, source_path='msys2/' + archive_name,

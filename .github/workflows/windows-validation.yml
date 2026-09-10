@@ -33,8 +33,38 @@ jobs:
             mingw-w64-ucrt-x86_64-qt6-declarative
             mingw-w64-ucrt-x86_64-sqlite3
             mingw-w64-ucrt-x86_64-ffmpeg
+      - name: Identify media toolchain
+        id: media-toolchain
+        run: |
+          package_hash=$(pacman -Q | sha256sum | cut -d ' ' -f 1)
+          echo "key=windows-private-media-${ImageVersion}-${package_hash}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: media-cache
+        with:
+          key: ${{ steps.media-toolchain.outputs.key }}-${{ hashFiles('scripts/release/build-media.sh') }}
+          path: |
+            out/media/prefix
+            out/media/sources
+            out/media/manifests
+            out/media/ffmpeg-9.0.1
+            out/media/mpv-0.41.0
+            out/media/dav1d-1.5.4
+            out/media/libplacebo-7.360.1
       - name: Build private media tools
+        if: steps.media-cache.outputs.cache-hit != 'true'
         run: scripts/release/build-media.sh
+      - uses: actions/cache/save@v4
+        if: steps.media-cache.outputs.cache-hit != 'true'
+        with:
+          key: ${{ steps.media-cache.outputs.cache-primary-key }}
+          path: |
+            out/media/prefix
+            out/media/sources
+            out/media/manifests
+            out/media/ffmpeg-9.0.1
+            out/media/mpv-0.41.0
+            out/media/dav1d-1.5.4
+            out/media/libplacebo-7.360.1
       - name: Build application and deploy Qt
         run: |
           cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DSCRUBTUB_DEPLOY_QT=ON

@@ -135,7 +135,9 @@ smoke test, then maps staged files to their installed MSYS2 packages.
 `collect-windows-compliance.py` downloads each exact, signed MSYS2 source-only
 tarball and verifies its signature with the MSYS2 keyring. These archives contain
 the upstream sources, patches and PKGBUILD recipes. Missing package notices or
-unmapped files stop the workflow. The resulting ZIP and source tarball pass the
+unmapped files stop the workflow. When a binary package omits notices, the
+collector reads license texts from its verified source archive; LuaJIT notices
+come from the exact Git commit selected by its build recipe. The resulting ZIP and source tarball pass the
 same inventory gate used on Linux before being uploaded as workflow artifacts.
 
 A successful build and smoke test are required before offering a Windows

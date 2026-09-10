@@ -25,27 +25,16 @@ QStringList splitQueryTokens(const QString& text)
     return text.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
 }
 
-// Search snapshot record for one row (§8: compact pre-normalized records).
-void buildSearchRecord(Database* db, qint64 videoId, SearchRecord* out)
+// Turns raw row text plus tag norms into the matching snapshot. Shared by the
+// single-row refresh and the bulk fill below so both stay in step.
+void fillRecordFromText(const QString& fileName, const QString& relPath,
+                        const QStringList& tagNorms, SearchRecord* out)
 {
-    Statement st = db->prepare(
-        "SELECT v.file_name, v.rel_path FROM videos v WHERE v.id=?");
-    st.bind(1, videoId);
-    if (!st.step())
-        return;
-    out->id = videoId;
-    out->fileName = st.text(0);
-    out->relPath = st.text(1);
+    out->fileName = fileName;
+    out->relPath = relPath;
 
     QStringList sourceTexts{out->fileName, out->relPath};
-    Statement tagSt = db->prepare(
-        "SELECT t.norm FROM video_tags vt JOIN tags t ON t.id = vt.tag_id "
-        "WHERE vt.video_id=? AND NOT EXISTS("
-        "  SELECT 1 FROM tag_suppressions s WHERE s.video_id = vt.video_id "
-        "  AND s.tag_id = vt.tag_id AND vt.origin != 'manual')");
-    tagSt.bind(1, videoId);
-    while (tagSt.step())
-        sourceTexts.append(tagSt.text(0));
+    sourceTexts += tagNorms;
 
     QStringList tokens;
     for (const QString& text : sourceTexts)
@@ -62,9 +51,33 @@ void buildSearchRecord(Database* db, qint64 videoId, SearchRecord* out)
             folded.append(f);
     }
     out->foldedTokens = folded;
+    out->foldedBlob = folded.join(QLatin1Char(' '));
     out->foldedName = TagEngine::diacriticFold(out->fileName);
     out->foldedPath = TagEngine::diacriticFold(out->relPath);
     out->normName = TagEngine::normalize(out->fileName);
+}
+
+// Search snapshot record for one row (§8: compact pre-normalized records).
+void buildSearchRecord(Database* db, qint64 videoId, SearchRecord* out)
+{
+    Statement st = db->prepare(
+        "SELECT v.file_name, v.rel_path FROM videos v WHERE v.id=?");
+    st.bind(1, videoId);
+    if (!st.step())
+        return;
+    out->id = videoId;
+
+    QStringList tagNorms;
+    Statement tagSt = db->prepare(
+        "SELECT t.norm FROM video_tags vt JOIN tags t ON t.id = vt.tag_id "
+        "WHERE vt.video_id=? AND NOT EXISTS("
+        "  SELECT 1 FROM tag_suppressions s WHERE s.video_id = vt.video_id "
+        "  AND s.tag_id = vt.tag_id AND vt.origin != 'manual')");
+    tagSt.bind(1, videoId);
+    while (tagSt.step())
+        tagNorms.append(tagSt.text(0));
+
+    fillRecordFromText(st.text(0), st.text(1), tagNorms, out);
 }
 
 struct MatchResult {
@@ -84,10 +97,18 @@ MatchResult matchTokens(const SearchRecord& record,
     // token here dominated search cost (§8 runs on every keystroke).
     for (int qi = 0; qi < foldedQuery.size(); ++qi) {
         const QString& fq = foldedQuery.at(qi);
+        const int limit = TagEngine::editDistanceLimit(fq.size());
+        // Fast reject: with no typo budget a token that appears nowhere in the
+        // tokens, file name or path cannot match, so the per-token loop is
+        // skipped entirely (this is the state most keystrokes are in).
+        if (limit == 0 && !record.foldedBlob.contains(fq)
+            && !record.foldedName.contains(fq) && !record.foldedPath.contains(fq)) {
+            result.matched = false;
+            return result;
+        }
         int bestClass = -1;
         int bestDistance = -1;
         bool nameOnly = false;
-        const int limit = TagEngine::editDistanceLimit(fq.size());
         for (int ti = 0; ti < record.foldedTokens.size(); ++ti) {
             const QString& token = record.foldedTokens.at(ti);
             int cls = -1;
@@ -145,8 +166,38 @@ MatchResult matchTokens(const SearchRecord& record,
 void Catalogue::refreshSearchRecord(qint64 videoId)
 {
     SearchRecord record;
+    record.id = videoId;
     buildSearchRecord(m_db.get(), videoId, &record);
     m_searchRecords.insert(videoId, record);
+}
+
+// Fills every missing snapshot in one pass: three statements instead of two
+// per row (the first search over 10k videos used to prepare 20k statements).
+void Catalogue::ensureSearchRecords()
+{
+    QHash<qint64, QStringList> tagsByVideo;
+    {
+        Statement tags = m_db->prepare(
+            "SELECT vt.video_id, t.norm FROM video_tags vt JOIN tags t ON t.id = vt.tag_id "
+            "WHERE NOT EXISTS(SELECT 1 FROM tag_suppressions s "
+            "WHERE s.video_id = vt.video_id AND s.tag_id = vt.tag_id "
+            "AND vt.origin != 'manual')");
+        while (tags.step())
+            tagsByVideo[tags.int64(0)].append(tags.text(1));
+    }
+
+    Statement rows = m_db->prepare("SELECT id, file_name, rel_path FROM videos");
+    if (!rows.isValid())
+        return;
+    while (rows.step()) {
+        const qint64 id = rows.int64(0);
+        if (m_searchRecords.contains(id))
+            continue; // snapshot present; refreshSearchRecord() owns updates
+        SearchRecord record;
+        record.id = id;
+        fillRecordFromText(rows.text(1), rows.text(2), tagsByVideo.value(id), &record);
+        m_searchRecords.insert(id, record);
+    }
 }
 
 QString Catalogue::whereForFilters(const QuerySpec& spec, QStringList* wheres) const
@@ -299,6 +350,10 @@ void Catalogue::search(const QuerySpec& spec)
         return;
     }
 
+    // Text queries need the matching snapshot; fill it in bulk when absent.
+    if (!queryTokens.isEmpty())
+        ensureSearchRecords();
+
     Statement st = m_db->prepare(sql.toUtf8().constData());
     if (!st.isValid()) {
         emit operationFailed(m_db->lastError());
@@ -319,6 +374,8 @@ void Catalogue::search(const QuerySpec& spec)
             refreshSearchRecord(id);
             recordIt = m_searchRecords.constFind(id);
         }
+        if (recordIt == m_searchRecords.constEnd())
+            continue; // video disappeared between the scan and the fill
         const SearchRecord& record = recordIt.value();
         if (queryTokens.isEmpty()) {
             candidates.append({id, MatchResult{}, record.normName});
@@ -355,10 +412,32 @@ void Catalogue::search(const QuerySpec& spec)
 
 void Catalogue::fetchRowsPage(const QList<qint64>& videoIds, quint64 generation)
 {
+    if (videoIds.isEmpty()) {
+        emit rowsPageReady({}, videoIds, generation);
+        return;
+    }
+    // One statement for the whole page: a page is 200 IDs and preparing 200
+    // single-row reads costs more than the reads themselves (§8).
+    QString sql = rowSelectSql() + QStringLiteral(" WHERE v.id IN (")
+        + QString(QLatin1String("?,")).repeated(videoIds.size() - 1) + QStringLiteral("?)");
+    Statement st = m_db->prepare(sql.toUtf8().constData());
+    if (!st.isValid()) {
+        emit operationFailed(m_db->lastError());
+        return;
+    }
+    for (int i = 0; i < videoIds.size(); ++i)
+        st.bind(i + 1, videoIds.at(i));
+    QHash<qint64, VideoRow> byId;
+    while (st.step()) {
+        VideoRow row = rowFromColumns(st);
+        byId.insert(row.id, row);
+    }
     QList<VideoRow> rows;
+    rows.reserve(videoIds.size());
     for (const qint64 id : videoIds) {
-        const auto row = readRow(id);
-        if (row.id > 0) rows.append(row);
+        const auto it = byId.constFind(id);
+        if (it != byId.constEnd() && it.value().id > 0)
+            rows.append(it.value());
     }
     emit rowsPageReady(rows, videoIds, generation);
 }

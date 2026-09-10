@@ -330,6 +330,20 @@ bool Database::migrate(QString* error)
         return false;
     }
 
+    // Indexes are idempotent and not part of the schema contract, so they are
+    // ensured on every open (an existing library picks them up without a
+    // version bump). cache_entries(kind, ...) turns the poster/progress joins
+    // and preview-eligibility checks into covering index scans.
+    static const char* const kIndexes[] = {
+        "CREATE INDEX IF NOT EXISTS idx_cache_kind ON cache_entries(kind, video_id, revision)",
+    };
+    const auto ensureIndexes = [this, &kIndexes] {
+        for (const char* sql : kIndexes)
+            if (!exec(sql))
+                return false;
+        return true;
+    };
+
     const auto metaTable =
         scalarInt("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'");
     std::optional<qint64> version;
@@ -352,6 +366,11 @@ bool Database::migrate(QString* error)
                 *error = lastError();
             return false;
         }
+        if (!ensureIndexes()) {
+            if (error)
+                *error = lastError();
+            return false;
+        }
         const bool stamped = transaction([this]() {
             Statement st = prepare(
                 "INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)");
@@ -365,10 +384,6 @@ bool Database::migrate(QString* error)
         return stamped;
     }
 
-    // Stepwise migrations. v1 → v2: the selected-stream index and the
-    // settings table. ALTER is guarded by a column check because databases
-    // created while these were part of the unversioned schema already carry
-    // them (idempotent, §4). Each step runs inside a transaction.
     if (version.value() == 1) {
         bool hasStreamIndex = false;
         {
@@ -390,7 +405,20 @@ bool Database::migrate(QString* error)
         });
         if (error)
             *error = ok ? QString() : lastError();
-        return ok;
+        if (!ok)
+            return false;
+        if (!ensureIndexes()) {
+            if (error)
+                *error = lastError();
+            return false;
+        }
+        return true;
+    }
+
+    if (!ensureIndexes()) {
+        if (error)
+            *error = lastError();
+        return false;
     }
 
     if (error)

@@ -41,6 +41,7 @@ struct SearchRecord {
     QString relPath;
     QStringList tokens;       // normalized name/path/tag tokens
     QStringList foldedTokens; // diacritic-folded copies
+    QString foldedBlob;       // foldedTokens joined by spaces (cheap reject)
     QString foldedName;       // diacritic-folded fileName
     QString foldedPath;       // diacritic-folded relPath
     QString normName;         // normalize()d fileName, the relevance sort key
@@ -93,8 +94,7 @@ public:
                     const QString& ffmpegPath, QString* error);
 
     // Tuning (§5: proposed settings to validate, not immutable constants).
-    void setProbeConcurrency(int n) { m_jobConcurrency = n; }
-    void setProbeTimeoutMs(int ms) { m_probeTimeoutMs = ms; }
+    void setProbeConcurrency(int n) { m_jobConcurrency = n; }    void setProbeTimeoutMs(int ms) { m_probeTimeoutMs = ms; }
     void setPreviewTimeoutMs(int ms) { m_previewTimeoutMs = ms; }
     void setDiskCacheLimitBytes(qint64 bytes) { m_diskCacheLimit = bytes; }
 
@@ -243,6 +243,7 @@ public:
 
 private:
     void refreshSearchRecord(qint64 videoId);
+    void ensureSearchRecords();
     void applyAutoTags(qint64 videoId, const ProbeResult& probe);
 
     QString whereForFilters(const QuerySpec& spec, QStringList* wheres) const;
@@ -273,7 +274,8 @@ private:
     QTimer* m_dispatchTimer = nullptr;
     QThreadPool* m_pool = nullptr;
     QList<ActiveJob*> m_activeJobs;
-    int m_jobConcurrency = 2;      // 2–4 workers, selected from CPU capacity
+    int m_jobConcurrency = 2;      // media workers, scaled from the CPU count
+    int m_previewConcurrency = 2;  // background preview workers (subset)
     int m_probeTimeoutMs = 30000;  // §5: 30 s probe timeout
     int m_previewTimeoutMs = 60000; // §5: 60 s per-preview-job timeout
     qint64 m_diskCacheLimit = 5LL * 1024 * 1024 * 1024; // §6: 5 GiB default

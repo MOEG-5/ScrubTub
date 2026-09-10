@@ -116,6 +116,15 @@ QHash<int, QByteArray> CatalogueModel::roleNames() const
             {ProbeErrorRole, "probeError"}};
 }
 
+void CatalogueModel::rebuildPositions()
+{
+    m_pos.clear();
+    m_pos.reserve(m_order.size());
+    for (int i = 0; i < m_order.size(); ++i)
+        m_pos.insert(m_order.at(i), i);
+    m_posDirty = false;
+}
+
 void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
 {
     if (reset) {
@@ -136,17 +145,24 @@ void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
                                                     Qt::CaseInsensitive)
                 < 0;
         });
+        rebuildPositions();
         endResetModel();
         emit countChanged();
         return;
     }
 
+    // Positions stay usable for the whole call unless this call inserts rows.
+    bool positionsUsable = !m_posDirty;
     for (const VideoRow& row : rows) {
         if (row.id <= 0) continue;
         const auto it = m_rows.constFind(row.id);
         if (it != m_rows.constEnd() || m_orderSet.contains(row.id)) {
             m_rows.insert(row.id, row);
-            const int pos = m_order.indexOf(row.id);
+            if (!positionsUsable) {
+                rebuildPositions();
+                positionsUsable = true;
+            }
+            const int pos = m_pos.value(row.id, -1);
             if (pos >= 0) {
                 const QModelIndex idx = index(pos);
                 emit dataChanged(idx, idx);
@@ -165,6 +181,8 @@ void CatalogueModel::applyRows(const QList<VideoRow>& rows, bool reset)
             beginInsertRows(QModelIndex(), insertAt, insertAt);
             m_order.insert(insertAt, row.id);
             m_orderSet.insert(row.id);
+            m_posDirty = true; // every position at/after insertAt shifted
+            positionsUsable = false;
             if (insertAt <= m_missingCursor)
                 ++m_missingCursor; // keep the cursor on the same boundary
             endInsertRows();
@@ -182,6 +200,7 @@ void CatalogueModel::setOrder(const QList<qint64>& ids, bool isSearchResult)
     m_order = ids; // IDs without details yet fetch their pages on demand
     m_orderSet = QSet<qint64>(ids.cbegin(), ids.cend());
     m_missingCursor = 0;
+    rebuildPositions();
     endResetModel();
     emit countChanged();
     requestMissingDetails();
@@ -251,6 +270,8 @@ void CatalogueModel::applyPage(const QList<VideoRow>& rows,
         m_order.removeAt(pos);
         m_orderSet.remove(id);
         m_rows.remove(id);
+        m_posDirty = true;
+        m_pos.remove(id);
         if (pos < m_missingCursor)
             --m_missingCursor;
         endRemoveRows();

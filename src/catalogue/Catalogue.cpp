@@ -20,6 +20,14 @@ QString localPathFromUserInput(const QString& input)
 
 } // namespace scrubtub
 
+// Forward-declared: the M3/M4 units (included just below) build their own
+// row queries from the same projection.
+namespace scrubtub {
+class Statement;
+QString rowSelectSql();
+VideoRow rowFromColumns(Statement& st);
+} // namespace scrubtub
+
 #include "CatalogueM3.cpp"
 #include "CatalogueM4.cpp"
 
@@ -72,6 +80,22 @@ QString fileNameOf(const QString& path)
 const char* kPosterProfile = "poster-320-v1";
 const char* kStoryboardProfile = kSparsePreviewProfile;
 
+// Media jobs are single-threaded external decoders (-threads 1): throughput
+// comes from running many at once, not from threading one decode. Keep
+// headroom for the UI, the catalogue thread and the hover player, and cap the
+// fan-out so a large machine does not thrash the disk.
+int defaultJobConcurrency()
+{
+    bool overridden = false;
+    const int fromEnv =
+        qEnvironmentVariableIntValue("SCRUBTUB_JOB_CONCURRENCY", &overridden);
+    if (overridden && fromEnv > 0)
+        return std::clamp(fromEnv, 1, 64);
+    return std::clamp(QThread::idealThreadCount() - 2, 4, 16);
+}
+
+} // namespace
+
 // The full row projection, shared by single-row reads and bulk refreshes.
 QString rowSelectSql()
 {
@@ -109,14 +133,11 @@ VideoRow rowFromColumns(Statement& st)
     return row;
 }
 
-} // namespace
-
 Catalogue::Catalogue(QObject* parent)
     : QObject(parent)
 {
-    // Independent single-decoder jobs scale better than adding decoder
-    // threads. Keep capacity for the UI/player and avoid unbounded I/O.
-    m_jobConcurrency = std::clamp(QThread::idealThreadCount() - 2, 2, 4);
+    m_jobConcurrency = defaultJobConcurrency();
+    m_previewConcurrency = std::max(2, m_jobConcurrency / 3);
     qRegisterMetaType<VideoRow>();
     qRegisterMetaType<QList<VideoRow>>();
     qRegisterMetaType<RootInfo>();
@@ -281,6 +302,16 @@ void Catalogue::removeRoot(qint64 rootId)
         emit operationFailed(QStringLiteral("Unknown root"));
         return;
     }
+    // Release app-owned artifacts and search snapshots before the rows
+    // cascade away; otherwise their files leak until the next startup sweep.
+    QList<qint64> videoIds;
+    {
+        Statement ids = m_db->prepare("SELECT id FROM videos WHERE root_id=?");
+        ids.bind(1, rootId);
+        while (ids.step())
+            videoIds.append(ids.int64(0));
+    }
+    purgeCacheForVideos(videoIds);
     if (!m_db->transaction([this, rootId] {
             Statement del = m_db->prepare("DELETE FROM roots WHERE id=?");
             del.bind(1, rootId);
@@ -292,7 +323,8 @@ void Catalogue::removeRoot(qint64 rootId)
     // Cancel only this root's workers. Keep job objects alive until their
     // queued completion arrives; cancellation also protects against reused IDs.
     killActiveJobs(rootId);
-    m_searchRecords.clear();
+    for (const qint64 id : videoIds)
+        m_searchRecords.remove(id);
     if (m_scannedRootId == rootId)
         m_scannedRootId = 0;
     emit rootRemoved(rootId);
@@ -653,9 +685,11 @@ void Catalogue::dispatchJobs()
         queueSparsePreviews();
     while (m_activeJobs.size() < m_jobConcurrency) {
         // Priority: posters (visible cards) before remaining probes, and
-        // background storyboards last (§5). Picking per kind keeps every
-        // probe on idx_jobs_state; the CASE-ordered form made SQLite sort the
-        // whole queued backlog once per dispatched job.
+        // background storyboards last (§5). Picking per kind keeps every probe
+        // on idx_jobs_state; the CASE-ordered form made SQLite sort the whole
+        // queued backlog once per dispatched job. The preview pass uses only a
+        // fraction of the workers so it never crowds out foreground work, but
+        // it still scales with the machine.
         static const char* const kKindPriority[] = {"poster", "probe", "storyboard"};
         bool picked = false;
         for (const char* priority : kKindPriority) {
@@ -678,7 +712,7 @@ void Catalogue::dispatchJobs()
             // Never start the second pass while metadata/posters are pending.
             const auto activePreviews = std::count_if(m_activeJobs.cbegin(), m_activeJobs.cend(),
                 [](const ActiveJob* item) { return item->kind == QLatin1String("storyboard"); });
-            if (primaryPending > 0 || activePreviews >= 2)
+            if (primaryPending > 0 || activePreviews >= m_previewConcurrency)
                 break;
             const qint64 previewBytes = m_db->scalarInt(
                 "SELECT COALESCE(SUM(bytes),0) FROM cache_entries WHERE kind='storyboard'").value_or(0);
@@ -719,9 +753,13 @@ void Catalogue::dispatchJobs()
         m_scanActive.store(true);
 
         const QString absPath = rootPath + QLatin1Char('/') + rel;
-        if (!m_pool)
+        if (!m_pool) {
             m_pool = new QThreadPool(this);
-        m_pool->setMaxThreadCount(m_jobConcurrency);
+            m_pool->setMaxThreadCount(m_jobConcurrency);
+            // A worker blocked on a killed child must not hold a replacement
+            // job hostage after the user cancels.
+            m_pool->setExpiryTimeout(30000);
+        }
         m_pool->start([this, active, absPath] { runJob(active, absPath); });
     }
 
@@ -1286,15 +1324,16 @@ void Catalogue::emitProgress(const QString& state)
     progress.discovered = m_discovered;
     progress.probed = m_probed;
     progress.errors = m_errors;
-    // Count videos, not jobs: probing hands off to posters without increasing
-    // the remaining total. Optional storyboards do not hold up readiness.
+    // §5 counts feed a status line: count videos, not jobs. The poster count
+    // joins through cache_entries so the covering index drives it instead of
+    // scanning every video with a correlated subquery.
     progress.remaining = m_db->scalarInt(
         "SELECT COUNT(DISTINCT video_id) FROM jobs WHERE kind IN ('probe','poster') "
         "AND state IN ('queued','running')").value_or(0);
     progress.processed = m_db->scalarInt(
-        "SELECT COUNT(*) FROM videos v WHERE probe_status='ok' AND EXISTS "
-        "(SELECT 1 FROM cache_entries c WHERE c.video_id=v.id AND "
-        "c.revision=v.revision AND c.kind='poster')").value_or(0);
+        "SELECT COUNT(*) FROM cache_entries c JOIN videos v ON v.id=c.video_id "
+        "AND v.revision=c.revision WHERE c.kind='poster' AND v.probe_status='ok'")
+                              .value_or(0);
     progress.previewsRemaining = m_db->scalarInt(
         "SELECT COUNT(*) FROM jobs WHERE kind='storyboard' AND state IN ('queued','running')").value_or(0);
     progress.failed = m_db->scalarInt(

@@ -97,6 +97,11 @@ private:
     // Membership mirror of m_order: the linear QVector scan was the quadratic
     // term in page delivery and row updates.
     QSet<qint64> m_orderSet;
+    // Row position per ID, rebuilt lazily after a structural change so the
+    // single-row update path (every probe/poster completion) stays O(1).
+    QHash<qint64, int> m_pos;
+    bool m_posDirty = true;
+    void rebuildPositions();
     // Next position in m_order not yet checked for missing details; avoids a
     // full order scan per page.
     int m_missingCursor = 0;

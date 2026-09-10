@@ -181,17 +181,10 @@ Item {
                 visible: card.hoverActive && durationMs > 0
                 clip: true
 
-                Image {
-                    id: atlasImage
-                    source: window.cachedTimelineEnabled && card.hoverActive ? card.atlasSource : ""
-                    sourceSize.width: 0
-                    asynchronous: true
-                    visible: false
-                    onStatusChanged: if (status === Image.Ready) card.atlasReady = true
-                }
-
-                // Clip the displayed atlas: sourceClipRect does not crop our
-                // asynchronous image provider's returned texture.
+                // Single decode: one Image both provides the atlas geometry
+                // and displays the cropped tile. sourceClipRect does not crop
+                // our asynchronous image provider's returned texture, so the
+                // tile is positioned inside a clipping item instead.
                 Item {
                     id: cachedFrame
                     anchors.centerIn: parent
@@ -206,12 +199,16 @@ Item {
                     visible: card.hoverActive && card.atlasReady
                              && card.sampleTimes.length > 0 && !card.liveFrameVisible
                     Image {
-                        source: atlasImage.source
+                        id: atlasImage
+                        // Released on leave; the provider's URL cache keeps the
+                        // same revision decoded when hovering again.
+                        source: window.cachedTimelineEnabled && card.hoverActive ? card.atlasSource : ""
                         asynchronous: true
-                        width: atlasImage.implicitWidth * cachedFrame.fit
-                        height: atlasImage.implicitHeight * cachedFrame.fit
+                        width: implicitWidth * cachedFrame.fit
+                        height: implicitHeight * cachedFrame.fit
                         x: -(card.hoverTileIndex % 5) * cachedFrame.width
                         y: -Math.floor(card.hoverTileIndex / 5) * cachedFrame.height
+                        onStatusChanged: if (status === Image.Ready) card.atlasReady = true
                     }
                 }
 

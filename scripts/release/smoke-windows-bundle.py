@@ -16,6 +16,7 @@ stage = Path(sys.argv[1]).resolve()
 user32 = ctypes.WinDLL('user32', use_last_error=True)
 callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
 user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
@@ -35,7 +36,10 @@ with tempfile.TemporaryDirectory(prefix='scrubtub-release-smoke-', ignore_cleanu
             owner = wintypes.DWORD()
             user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
             if owner.value == app.pid and user32.IsWindowVisible(window):
-                visible.append(window)
+                title = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(window, title, len(title))
+                if title.value == 'ScrubTub':
+                    visible.append(window)
             return True
         try:
             for attempt in range(30):

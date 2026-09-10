@@ -101,7 +101,7 @@ def main():
             urllib.request.urlretrieve(url + '.sig', signature)
         unix_sig = subprocess.check_output(['cygpath', '-u', str(signature)], text=True).strip()
         unix_source = subprocess.check_output(['cygpath', '-u', str(target)], text=True).strip()
-        subprocess.run(['bash', '-c', 'pacman-key --verify "$1" "$2"', '--', unix_sig, unix_source], check=True)
+        subprocess.run([str(msys / 'usr/bin/bash.exe'), '-c', 'pacman-key --verify "$1" "$2"', '--', unix_sig, unix_source], check=True)
         # Keep all package-provided license/copyright files. Fail if none exist.
         notice = notices / package
         notice.mkdir(exist_ok=True)
@@ -114,11 +114,11 @@ def main():
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(candidate, destination)
                     found += 1
-        if not found:
+        if not found or base.startswith('mingw-w64-qt6-'):
             spec = importlib.util.spec_from_file_location('source_notices', Path(__file__).with_name('source-notices.py'))
             helper = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(helper)
-            found = helper.collect(target, notice)
+            found += helper.collect(target, notice)
         if not found:
             raise RuntimeError(f'No package license notices for {package}; inspect signed source package')
         components[package] = dict(version=version, source_path='msys2/' + archive_name,

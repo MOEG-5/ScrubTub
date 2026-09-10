@@ -80,10 +80,13 @@ QString fileNameOf(const QString& path)
 const char* kPosterProfile = "poster-320-v1";
 const char* kStoryboardProfile = kSparsePreviewProfile;
 
-// Media jobs are single-threaded external decoders (-threads 1): throughput
-// comes from running many at once, not from threading one decode. Keep
-// headroom for the UI, the catalogue thread and the hover player, and cap the
-// fan-out so a large machine does not thrash the disk.
+// Media jobs are single-threaded external decoders: throughput comes from
+// running many at once, not from threading one decode. They are also mostly
+// waiting (process start, seek, disk), so the pool deliberately oversubscribes
+// the cores — measured on a 6-core machine, scanning the same 269-file library
+// took 95 s at 6 workers, 85 s at 12 and 66 s at 24. The ceiling keeps a very
+// large machine from opening hundreds of decoders at once, and
+// SCRUBTUB_JOB_CONCURRENCY overrides the whole rule for constrained hosts.
 int defaultJobConcurrency()
 {
     bool overridden = false;
@@ -91,7 +94,7 @@ int defaultJobConcurrency()
         qEnvironmentVariableIntValue("SCRUBTUB_JOB_CONCURRENCY", &overridden);
     if (overridden && fromEnv > 0)
         return std::clamp(fromEnv, 1, 64);
-    return std::clamp(QThread::idealThreadCount() - 2, 4, 16);
+    return std::clamp(4 * QThread::idealThreadCount(), 6, 32);
 }
 
 } // namespace
@@ -137,7 +140,9 @@ Catalogue::Catalogue(QObject* parent)
     : QObject(parent)
 {
     m_jobConcurrency = defaultJobConcurrency();
-    m_previewConcurrency = std::max(2, m_jobConcurrency / 3);
+    // Previews are the optional second pass: a slice of the pool, so they can
+    // never crowd out probing and posters, but still several at a time.
+    m_previewConcurrency = std::clamp(m_jobConcurrency / 3, 2, 8);
     qRegisterMetaType<VideoRow>();
     qRegisterMetaType<QList<VideoRow>>();
     qRegisterMetaType<RootInfo>();

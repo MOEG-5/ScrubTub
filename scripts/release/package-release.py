@@ -75,6 +75,6 @@ Both downloads must remain available together. Provided without warranty.
 
 The exact dependency inventory is in `share/scrubtub/DEPENDENCIES.json`.
 '''
-(args.output / 'RELEASE_NOTES.md').write_text(notes)
+(args.output / 'RELEASE_NOTES.md').write_text(notes, encoding='utf-8')
 for path in (binary, source, checksums):
     print(f'{path.name}: {path.stat().st_size / 1024**2:.1f} MiB')

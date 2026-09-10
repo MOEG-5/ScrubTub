@@ -42,13 +42,13 @@ def main():
         if not (directory / 'desc').is_file():
             continue
         fields = {}
-        for part in (directory / 'desc').read_text().split('\n\n'):
+        for part in (directory / 'desc').read_text(encoding='utf-8').split('\n\n'):
             lines = part.splitlines()
             if lines:
                 fields[lines[0].strip('%')] = lines[1:]
         name = fields['NAME'][0]
         metadata[name] = fields
-        for relative in (directory / 'files').read_text().splitlines():
+        for relative in (directory / 'files').read_text(encoding='utf-8').splitlines():
             path = msys / relative
             if relative.startswith('ucrt64/') and path.is_file():
                 candidates[path.name.lower()].append((path, name))
@@ -86,9 +86,14 @@ def main():
         if component is None:
             raise RuntimeError(f'Unmapped runtime file: {relative}')
         records.append(dict(file=relative, component=component, sha256=identity))
-    # Restored MSYS2 installations may carry a keyring owned by another runner.
-    # Initialize a disposable keyring with MSYS2's packaged master/packager keys
-    # and revocation policy, without changing the installation's keyring.
+    # MinGW startup code and inline headers also enter the executable, although
+    # they are not visible in its DLL imports. Preserve their sources/notices.
+    static_packages = {'mingw-w64-ucrt-x86_64-crt', 'mingw-w64-ucrt-x86_64-headers'}
+    if not static_packages.issubset(metadata):
+        raise RuntimeError('Missing MinGW CRT/header provenance')
+    packages.update(static_packages)
+    # Use a disposable MSYS2 trust database and its packaged revocation policy,
+    # without changing the installation's keyring.
     key_home = tempfile.TemporaryDirectory(prefix='scrubtub-source-keyring-', ignore_cleanup_errors=True)
     unix_key_home = subprocess.check_output([str(msys / 'usr/bin/cygpath.exe'), '-u', key_home.name], text=True).strip()
     bash = str(msys / 'usr/bin/bash.exe')
@@ -138,7 +143,8 @@ def main():
             raise RuntimeError(f'No package license notices for {package}; inspect signed source package')
         components[package] = dict(version=version, source_path='msys2/' + archive_name,
                                   notice_path=str(notice.relative_to(stage)).replace('\\', '/'),
-                                  source_url=url, license=fields.get('LICENSE', []))
+                                  source_url=url, license=fields.get('LICENSE', []),
+                                  compiled_in=package in static_packages)
         print(f'Collected and verified {package}', flush=True)
     # The private collector preserves upstream archives and full notices.
     materials = sources / 'private-materials'

@@ -37,3 +37,24 @@ while queue:
         if not system.match(name):
             queue.append((Path(location), stage / 'lib' / name))
 print(f'Checked {len(seen)} Qt plugin/runtime files')
+
+# Debian's Qt deployment can leave indirect libraries with no RUNPATH.
+# Set every application/QML ELF's path, including files Qt already copied.
+elfs = []
+for path in stage.rglob('*'):
+    if not path.is_file() or path.is_symlink() or path.is_relative_to(stage / 'bin/media'):
+        continue
+    with path.open('rb') as stream:
+        if stream.read(4) != b'\x7fELF':
+            continue
+    rpath = '$ORIGIN/' + os.path.relpath(stage / 'lib', path.parent)
+    subprocess.run(['patchelf', '--set-rpath', rpath, str(path)], check=True)
+    elfs.append(path)
+for path in elfs:
+    result = subprocess.check_output(['ldd', str(path)], text=True)
+    if 'not found' in result:
+        raise RuntimeError(f'{path}: {result}')
+    for name, location in re.findall(r'^\s*([^/\s]+) => (/\S+) \(', result, re.M):
+        if not system.match(name) and not Path(location).resolve().is_relative_to(stage):
+            raise RuntimeError(f'{path} uses an unbundled library: {name} => {location}')
+print(f'Verified relative runtime resolution for {len(elfs)} application and Qt ELF files')

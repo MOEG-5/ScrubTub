@@ -44,6 +44,7 @@ jobs:
       - name: Stage DLLs and preserve build materials
         run: |
           python scripts/release/stage-windows-media.py out/windows-validation --dependencies "$(cygpath -m "$MINGW_PREFIX")"
+          python scripts/release/smoke-windows-bundle.py out/windows-validation
           SCRUBTUB_RELEASE_MEDIA_DIR="$(cygpath -m "$PWD/out/windows-validation/bin/media")" QT_QPA_PLATFORM=offscreen ctest --test-dir build-release -R '^releasesmoke$' --output-on-failure
           pacman -Q > out/media/manifests/msys2-packages.txt
           python scripts/release/collect-windows-compliance.py out/windows-validation out/windows-sources --dependencies "$(cygpath -m "$MINGW_PREFIX")"

@@ -848,7 +848,7 @@ ApplicationWindow {
                 text: qsTr("Uses Qt under LGPL/GPL terms, FFmpeg, mpv and other open-source components. Full notices are included with this download. Corresponding source and build materials accompany each release.")
             }
             ActionButton {
-                text: qsTr("Open licenses & notices")
+                text: qsTr("Open licenses and notices")
                 onClicked: Qt.openUrlExternally(licenseDirectory)
             }
         }

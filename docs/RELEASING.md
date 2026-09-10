@@ -26,7 +26,7 @@ The base Debian 13 image is pinned by digest. Exact installed package versions
 are recorded with the source materials. Apt is used only inside the disposable
 builder; the host's mpv, FFmpeg, ffprobe and other packages remain unchanged.
 The resulting Linux build targets x86-64 with glibc 2.41 or newer. Do not describe
-it as supporting all Linux distributions.
+it as supporting all Linux distributions. The desktop session needs X11 or XWayland.
 
 Outputs under `out/release/artifacts/`:
 
@@ -122,7 +122,7 @@ media test without uploading or copying the private corpus. The hosted jobs do
 not have `vids/`; those corpus-specific cases skip explicitly.
 
 The Linux builder runs the full CTest suite with the private-tool overrides,
-plus release-gate tests. The gate tests cover missing sources, altered binaries,
+plus release-gate tests and a packaged-app startup check in an isolated Xvfb display. The gate tests cover missing sources, altered binaries,
 stripped notices and unaccounted-for executables. GUI checks require Xvfb or
 another dedicated disposable session and a separate application profile.
 

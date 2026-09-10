@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 the scrubtub authors.
-// Test media access per AGENTS.md: read-only suites scan the repository's
+// Test media access per README.md testing guidance: read-only suites scan the repository's
 // vids/ folder as-is; cases that must mutate media synthesize their own tiny
 // originals with ffmpeg. Nothing here ever copies or writes into vids/.
 #pragma once

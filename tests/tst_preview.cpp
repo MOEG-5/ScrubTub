@@ -3,7 +3,7 @@
 // PreviewProvider contract checks: async responses, cancellation, bounded
 // decode size, missing-artifact behavior. Posters and atlases are produced by
 // the real extractor from the repository's vids/ corpus, read as-is
-// (AGENTS.md: read-only).
+// (README.md testing guidance: read-only).
 #include <QGuiApplication>
 #include <QImage>
 #include <QColor>

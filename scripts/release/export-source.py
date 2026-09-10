@@ -18,7 +18,7 @@ files = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '--cached',
 hashes = {}
 for name in sorted(set(files) - {''}):
     relative = Path(name)
-    if relative.parts[0] in ('vids', 'out', '.git') or relative.parts[0].startswith('build'):
+    if relative.parts[0] in ('vids', 'out', '.git', 'idea') or 'AGENTS.md' in relative.parts or name.startswith(('docs/archive/', 'docs/bench/')) or relative.parts[0].startswith('build'):
         raise RuntimeError(f'Refusing to export local media/build content: {name}')
     source = repo / relative
     if not source.exists():

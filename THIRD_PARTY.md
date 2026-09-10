@@ -39,10 +39,3 @@ the relevant licenses. The source archive explains how to rebuild the software.
 These are summaries, not replacements for the full notices. Embedded code inside
 Qt and other dependencies is covered by the respective component notices and
 source packages. Debian notices may refer to the included `licenses/common-licenses/`.
-
-## Reference material in the source repository
-
-`idea/thumbfast-master/` is third-party reference material under MPL-2.0. Its
-original source header and LICENSE are preserved. It is not installed into the
-ScrubTub application bundle. Do not interpret the root GPL license as relicensing
-those reference files.

@@ -6,7 +6,7 @@
 // manual/automatic tag overlap, suppressed tags surviving rescans, and a fuzzy
 // match paged beyond the first detail page.
 //
-// Media policy (AGENTS.md): catalogue-level cases search the repository's
+// Media policy (README.md testing guidance): catalogue-level cases search the repository's
 // vids/ corpus directly and as-is; names, tokens, counts, bounds and sort
 // orders are derived at run time from the scanned rows, never hard-coded.
 // Controlled trees (folder tags, folderPrefix, tag suppression across rescans)

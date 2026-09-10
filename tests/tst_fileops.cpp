@@ -6,7 +6,7 @@
 // schema and integrity validation, and cache controls limited to owned
 // artifacts.
 //
-// Media rules (AGENTS.md): the mutation cases use synthetic ORIGINAL clips
+// Media rules (README.md testing guidance): the mutation cases use synthetic ORIGINAL clips
 // under the test profile so nothing here can touch the owner's library, and
 // they live on the same filesystem as the redirected XDG data dir so the
 // platform Trash facility works. The repository's vids/ corpus is only ever

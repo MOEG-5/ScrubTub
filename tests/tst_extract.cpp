@@ -4,7 +4,7 @@
 // Extraction contract checks (TECH_SPEC.md section 12): poster geometry and
 // content, storyboard sample plan/timestamps/atlas, rotation handling,
 // cancellation, per-job timeout, partial-atlas usability and corrupt-input
-// tolerance. Happy paths read the repository's vids/ corpus as-is (AGENTS.md:
+// tolerance. Happy paths read the repository's vids/ corpus as-is (README.md testing guidance:
 // read-only, never copied or derived); cases that need broken media generate
 // their own originals and mutate only those copies.
 #include <QDir>

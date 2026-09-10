@@ -43,3 +43,9 @@ fixtures/
 # Python release-tool caches
 __pycache__/
 *.pyc
+
+# Local agent guidance, references, and historical development material
+AGENTS.md
+/idea/
+/docs/archive/
+/docs/bench/

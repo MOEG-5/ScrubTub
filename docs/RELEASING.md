@@ -88,8 +88,7 @@ The archive also includes private media sources/configurations and RapidFuzz,
 which is compiled into the application and is not visible to `ldd`. Debian's
 complete copyright files and referenced common license texts are copied into
 `share/scrubtub/licenses/`. This includes embedded third-party notices in Qt.
-`THIRD_PARTY.md` describes the principal licenses and the separate MPL-2.0
-reference material in `idea/thumbfast-master/`.
+`THIRD_PARTY.md` describes the principal licenses.
 
 To rebuild a supplied Debian dependency, extract its `.dsc` with
 `dpkg-source -x package.dsc`. Its `debian/` directory supplies patches, build

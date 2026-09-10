@@ -3,7 +3,7 @@ find_file(SCRUBTUB_TEST_FIXTURE testvideo1.mp4
     NO_DEFAULT_PATH)
 
 # The read-only test corpus: the repository's own vids/ folder, scanned as-is
-# (AGENTS.md). Overridable per machine or per worktree at configure time
+# (README.md testing guidance). Overridable per machine or per worktree at configure time
 # (-DSCRUBTUB_TEST_VIDS_DIR=...) or at run time (SCRUBTUB_TEST_VIDS_DIR env);
 # suites skip with a clear message when it is missing.
 set(SCRUBTUB_TEST_VIDS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../vids" CACHE PATH
@@ -135,7 +135,7 @@ set_target_properties(tst_filesafety tst_probe tst_catalogue tst_extract tst_pre
 
 
 # Headless platforms for every Qt-based test; GUI tests use their own
-# disposable displays per AGENTS.md.
+# disposable displays per README.md testing guidance.
 set_tests_properties(filesafety probe catalogue extract preview hoversession search fileops PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )

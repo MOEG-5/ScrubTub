@@ -4,7 +4,7 @@
 // video-stream duration over subtitle duration, stream selection excluding
 // attached pictures, rotation/display dimensions, corrupt input, timeouts and
 // cancellation. JSON parse cases are table-driven and need no media; the run
-// case reads the repository's vids/ corpus as-is (AGENTS.md: read-only) and
+// case reads the repository's vids/ corpus as-is (README.md testing guidance: read-only) and
 // cross-checks the result against an independently invoked ffprobe.
 #include <QElapsedTimer>
 #include <QJsonArray>

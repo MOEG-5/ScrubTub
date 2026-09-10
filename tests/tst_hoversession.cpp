@@ -5,7 +5,7 @@
 // seeking, continuous motion, source switch/disengage hygiene, cached-only
 // fallback when mpv is unavailable, warm seek latency. Every live case drives
 // a real corpus file from the repository's vids/ folder, read as-is
-// (AGENTS.md: read-only, never copied or derived).
+// (README.md testing guidance: read-only, never copied or derived).
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>

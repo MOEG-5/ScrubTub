@@ -6,9 +6,6 @@ assign ratings and tags, and open videos in the system's default player.
 Source media is never modified; the only explicit file operation is
 Move-to-Trash, behind confirmation.
 
-The application is in maintenance: focused fixes and small improvements.
-Contributor and testing guidance lives in [AGENTS.md](AGENTS.md).
-
 ## License
 
 GPL-3.0-only — see [LICENSE](LICENSE). Distributed derivatives must meet GPL
@@ -49,7 +46,9 @@ Windows artifacts; neither publishes a release automatically.
 
 Use the repository's `vids/` folder directly without copying or changing its
 contents. Keep the test profile and generated caches outside it, and use an
-isolated display for GUI automation. See [AGENTS.md](AGENTS.md) for the test rules.
+isolated display for GUI automation; never automate the owner’s desktop session.
+The local media corpus is not distributed. Corpus-dependent tests skip when it
+is absent; use your own videos if you want to run those cases.
 
 For a Linux run inside that isolated session:
 
@@ -96,7 +95,7 @@ storyboard tiles cover the gap in the meantime. `SCRUBTUB_MPV_PATH` and
 | --- | --- |
 | `src/` | application sources (Qt Quick UI, catalogue, media workers) |
 | `tests/` | Qt Test suites and fixture support |
-| `docs/` | dependency manifest and historical archive |
+| `docs/` | dependency and release documentation |
 
 ## Interface
 

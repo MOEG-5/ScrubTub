@@ -6,7 +6,7 @@
 // rescans and revisions, changed content bumps the revision and invalidates
 // extraction, and profile locks exclude a second instance.
 //
-// Media policy (AGENTS.md): the repository's vids/ corpus is scanned directly
+// Media policy (README.md testing guidance): the repository's vids/ corpus is scanned directly
 // and as-is; expectations (file set, duration, resolution, codec) are derived
 // at run time from the directory listing and from independent ffprobe runs.
 // Cases that must mutate media (appended/removed/truncated files, offline

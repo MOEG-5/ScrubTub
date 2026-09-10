@@ -5,7 +5,7 @@
 // The scanner never decodes media, so the controlled-name cases build their
 // own disposable corpora from trivial files; sizes and mtimes are still the
 // real stat values. The repository's vids/ corpus is scanned directly, as-is
-// (AGENTS.md), and proven byte-identical afterwards with vidsFingerprint().
+// (README.md testing guidance), and proven byte-identical afterwards with vidsFingerprint().
 #include <QDateTime>
 #include <QDir>
 #include <QFile>

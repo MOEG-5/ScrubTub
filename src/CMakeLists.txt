@@ -79,6 +79,11 @@ if(SCRUBTUB_DEPLOY_QT)
             "/libc[.]so[.]" "/libm[.]so[.]" "/libdl[.]so[.]"
             "/libpthread[.]so[.]" "/librt[.]so[.]" "/libresolv[.]so[.]"
             "/ld-linux[^/]*[.]so")
+    elseif(WIN32)
+        # qt.conf supplies relative paths. Keep DLL bytes matchable to MSYS2,
+        # and let our DLL closure collector supply the MinGW runtime.
+        list(APPEND scrubtub_deploy_options NO_TRANSLATIONS NO_COMPILER_RUNTIME
+            DEPLOY_TOOL_OPTIONS --no-patchqt --no-system-d3d-compiler --no-opengl-sw)
     endif()
     qt_generate_deploy_qml_app_script(
         TARGET scrubtub

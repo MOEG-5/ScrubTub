@@ -94,6 +94,11 @@ def main():
     bash = str(msys / 'usr/bin/bash.exe')
     subprocess.run([bash, '-c', 'pacman-key --gpgdir "$1" --init && pacman-key --gpgdir "$1" --populate msys2',
                     '--', unix_key_home], check=True)
+    # MSYS2's pacman-key requires this setting for read-only verification.
+    # This keyring is private to this sequential collector, so no other process
+    # reads or writes it concurrently.
+    with (Path(key_home.name) / 'gpg.conf').open('a', encoding='utf-8') as config:
+        config.write('\nlock-never\n')
     components = {}
     for package in sorted(packages):
         fields = metadata[package]

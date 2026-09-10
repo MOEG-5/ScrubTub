@@ -72,13 +72,22 @@ jobs:
           cmake --build build-release -j 4
           QT_QPA_PLATFORM=offscreen ctest --test-dir build-release -R '^(mediatools|performance|catalogueupdates)$' --output-on-failure
           cmake --install build-release --prefix "$PWD/out/windows-validation"
-      - name: Stage DLLs and preserve build materials
+      - name: Stage runtime DLLs
+        id: stage
         run: |
           python scripts/release/stage-windows-media.py out/windows-validation --dependencies "$(cygpath -m "$MINGW_PREFIX")"
-          python scripts/release/smoke-windows-bundle.py out/windows-validation
-          SCRUBTUB_RELEASE_MEDIA_DIR="$(cygpath -m "$PWD/out/windows-validation/bin/media")" QT_QPA_PLATFORM=offscreen ctest --test-dir build-release -R '^releasesmoke$' --output-on-failure
           pacman -Q > out/media/manifests/msys2-packages.txt
-          python scripts/release/collect-windows-compliance.py out/windows-validation out/windows-sources --dependencies "$(cygpath -m "$MINGW_PREFIX")"
+      - name: Validate packaged GUI
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        run: python scripts/release/smoke-windows-bundle.py out/windows-validation
+      - name: Validate private media
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        run: SCRUBTUB_RELEASE_MEDIA_DIR="$(cygpath -m "$PWD/out/windows-validation/bin/media")" QT_QPA_PLATFORM=offscreen ctest --test-dir build-release -R '^releasesmoke$' --output-on-failure
+      - name: Collect licenses and corresponding sources
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        run: python scripts/release/collect-windows-compliance.py out/windows-validation out/windows-sources --dependencies "$(cygpath -m "$MINGW_PREFIX")"
+      - name: Verify and package release
+        run: |
           python scripts/release/export-source.py out/windows-sources/scrubtub
           PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s scripts/release/tests
           PYTHONDONTWRITEBYTECODE=1 python scripts/release/package-release.py out/windows-validation out/windows-sources out/windows-artifacts
